@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stack n Stock | Inventory Dashboard</title>
+  <link rel="icon" type="image/png" href="assets/favicon.png" />
+  <link rel="apple-touch-icon" href="assets/favicon.png" />
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+  <section id="authScreen" class="auth-screen hidden">
+    <div class="auth-card">
+      <img src="assets/stacknstock-logo.png" alt="Stack n Stock" class="auth-logo" />
+      <p class="eyebrow">Authorized access only</p>
+      <h1>Inventory Dashboard</h1>
+      <p class="auth-copy">Sign in with your approved Supabase account to access inventory, quarantine/NCR, and supplier data.</p>
+      <form id="authForm" class="auth-form">
+        <label>Access Portal<select id="teamSelect"><option value="inventory">Inventory / Stores Team</option><option value="production">Production Team</option></select></label>
+        <label>Email<input id="authEmail" type="email" autocomplete="email" required /></label>
+        <label>Password<input id="authPassword" type="password" autocomplete="current-password" required /></label>
+        <button class="primary-btn full" type="submit">Sign In</button>
+        <button class="ghost-btn full" type="button" id="signUpBtn">Create Account</button>
+        <small id="authMessage"></small>
+      </form>
+    </div>
+  </section>
+
+
+  <div class="production-shell hidden" id="productionPortal">
+    <header class="production-topbar">
+      <div>
+        <img src="assets/stacknstock-logo.png" alt="Stack n Stock" class="prod-logo" />
+        <p class="eyebrow">Production material request portal</p>
+        <h1>Redeem / Request Inventory</h1>
+      </div>
+      <div class="top-actions">
+        <button class="ghost-btn" id="prodRefreshBtn">Refresh Data</button>
+        <button class="ghost-btn" id="prodCartBtn">Cart <span id="cartBadge">0</span></button>
+        <button class="ghost-btn" id="prodSignOutBtn">Sign Out</button>
+      </div>
+    </header>
+
+    <main class="production-main">
+      <section class="toolbar production-toolbar">
+        <input id="prodSearchInput" type="search" placeholder="Search item, code, supplier, bin..." />
+        <select id="prodSortSelect">
+          <option value="item_code">Sort by item code</option>
+          <option value="description">Sort by description</option>
+          <option value="supplier">Sort by supplier</option>
+          <option value="qty_desc">Qty high to low</option>
+          <option value="qty_asc">Qty low to high</option>
+        </select>
+        <select id="prodSupplierFilter"><option value="">All suppliers</option></select>
+      </section>
+
+      <section class="panel" id="prodInventoryPanel">
+        <div class="panel-head"><h3>Available Inventory</h3><span id="prodRecordCount">0 items</span></div>
+        <div class="table-wrap tall">
+          <table>
+            <thead><tr><th>Item Code</th><th>Description</th><th>Supplier</th><th>Available Qty</th><th>UOM</th><th>Bin</th><th>Action</th></tr></thead>
+            <tbody id="prodInventoryRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel hidden" id="prodCartPanel">
+        <div class="panel-head"><h3>Material Request Cart</h3><button class="ghost-btn compact" id="backToProdInventory">Back to Inventory</button></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Item</th><th>Description</th><th>Available</th><th>Request Qty</th><th>Bin</th><th>Remove</th></tr></thead>
+            <tbody id="cartRows"></tbody>
+          </table>
+        </div>
+        <form id="ticketRequestForm" class="ticket-form">
+          <div class="form-row"><label>Work Order / Job <span class="required-star">*</span><input id="ticketWorkOrder" placeholder="WO / Job No" required /></label><label>Department <span class="required-star">*</span><input id="ticketDepartment" value="Production" required /></label></div>
+          <div class="form-row"><label>Received By <span class="required-star">*</span><input id="ticketReceivedBy" placeholder="Production receiver name" required /></label><label>Return Expected? <span class="required-star">*</span><select id="ticketReturnExpected" required><option>N</option><option>Y</option></select></label></div>
+          <label>Notes <span class="required-star">*</span><input id="ticketNotes" placeholder="Purpose / remarks" required /></label>
+          <button class="primary-btn full" type="submit">Raise Ticket</button>
+          <div id="ticketRequestMessage" class="ticket-message muted"></div>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <div class="app-shell hidden" id="appShell">
+    <aside class="sidebar">
+      <div class="brand">
+        <img src="assets/stacknstock-logo.png" alt="Stack n Stock logo" class="brand-logo" />
+        <div class="brand-copy">
+          <p>Inventory OS</p>
+          <h1>Inventory Dashboard</h1>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-btn active" data-view="dashboard">Dashboard</button>
+        <button class="nav-btn" data-view="inventory">Inventory</button>
+        <button class="nav-btn" data-view="quarantine">Quarantine / NCR</button>
+        <button class="nav-btn" data-view="suppliers">Suppliers</button>
+        <button class="nav-btn" data-view="bins">Bin Register</button>
+        <button class="nav-btn" data-view="reorder">Reorder Point</button>
+        <button class="nav-btn" data-view="tickets">Ticket Notifications</button>
+        <button class="nav-btn" data-view="movements">Issue Logs</button>
+        <button class="nav-btn" data-view="settings">Supabase Setup</button>
+      </nav>
+
+      <div class="side-card">
+        <span class="label">Connection</span>
+        <strong id="connectionStatus">Local mode</strong>
+        <small id="connectionHelp">Works offline. Add Supabase keys in config.js for database sync.</small>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Centralized warehouse visibility</p>
+          <h2 id="pageTitle">Inventory Dashboard</h2>
+        </div>
+        <div class="top-actions">
+          <div class="header-logo-chip">
+            <img src="assets/stacknstock-logo.png" alt="Stack n Stock" />
+          </div>
+          <button class="ghost-btn" id="refreshDataBtn">Refresh Data</button>
+          <button class="ghost-btn" id="exportExcelBtn">Export Excel</button>
+          <button class="ghost-btn" id="signOutBtn">Sign Out</button>
+          <button class="primary-btn" id="openItemModal">+ Add Item</button>
+        </div>
+      </header>
+
+      <section class="toolbar">
+        <input id="searchInput" type="search" placeholder="Search item, supplier, code, bin..." />
+        <select id="statusFilter">
+          <option value="">All status</option>
+          <option value="OK">OK</option>
+          <option value="HOLD">HOLD</option>
+          <option value="REJECT">REJECT</option>
+          <option value="MRB">MRB</option>
+        </select>
+        <select id="supplierFilter">
+          <option value="">All suppliers</option>
+        </select>
+      </section>
+
+      <section id="dashboardView" class="view active-view">
+        <div class="kpi-grid">
+          <article class="kpi-card"><span>Total SKUs</span><strong id="kpiSkus">0</strong><small>unique item codes</small></article>
+          <article class="kpi-card"><span>Total Quantity</span><strong id="kpiQty">0</strong><small>all units combined</small></article>
+          <article class="kpi-card"><span>OK Stock</span><strong id="kpiOk">0</strong><small>ready for putaway/use</small></article>
+          <article class="kpi-card alert"><span>On Hold / NCR</span><strong id="kpiHold">0</strong><small>needs action</small></article>
+          <article class="kpi-card alert"><span>Reorder Flags</span><strong id="kpiReorder">0</strong><small>qty below 3</small></article>
+        </div>
+
+        <div class="dashboard-grid">
+          <article class="panel">
+            <div class="panel-head"><h3>Status Mix</h3><span id="statusSummary">Live</span></div>
+            <div id="statusBars" class="bar-list"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-head"><h3>Top Suppliers by Qty</h3><span>Inventory contribution</span></div>
+            <div id="supplierBars" class="bar-list"></div>
+          </article>
+          <article class="panel wide">
+            <div class="panel-head"><h3>Recent Inventory Lines</h3><span id="recordCount">0 records</span></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Item Code</th><th>Description</th><th>Supplier</th><th>Qty</th><th>Status</th><th>Bin</th></tr></thead>
+                <tbody id="recentRows"></tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="inventoryView" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Inventory Register</h3>
+            <div class="panel-actions"><button class="ghost-btn compact" data-export-table="inventory">Export Table</button><span>GRN / stores visibility</span></div>
+          </div>
+          <div class="table-wrap tall">
+            <table>
+              <thead><tr><th>Supplier</th><th>Item Code</th><th>Description</th><th>UOM</th><th>Qty</th><th>Status</th><th>Bin</th><th>Actions</th></tr></thead>
+              <tbody id="inventoryRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="quarantineView" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Quarantine / NCR Register</h3>
+            <div class="panel-actions"><button class="ghost-btn compact" data-export-table="quarantine">Export Table</button><button class="ghost-btn compact" id="openNcrModal">+ Add NCR</button></div>
+          </div>
+          <div class="table-wrap tall">
+            <table>
+              <thead><tr><th>NCR No</th><th>PO Ref</th><th>Supplier</th><th>Item</th><th>Qty Hold</th><th>Reason</th><th>Status</th><th>Owner</th><th>Target</th><th>Actions</th></tr></thead>
+              <tbody id="quarantineRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="suppliersView" class="view">
+        <div class="panel-head floating-head"><h3>Supplier Metrics</h3><button class="ghost-btn compact" data-export-table="suppliers">Export Table</button></div>
+        <div class="supplier-grid" id="supplierCards"></div>
+      </section>
+
+
+      <section id="binsView" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Bin Location Register</h3>
+            <div class="panel-actions"><button class="ghost-btn compact" data-export-table="bins">Export Table</button><button class="ghost-btn compact" id="openBinModal">+ Add Bin</button><span id="binCount">0 bins</span></div>
+          </div>
+          <div id="binOverview" class="overview-grid"></div>
+          <div class="table-wrap tall">
+            <table>
+              <thead><tr><th class="sortable-th" data-bin-sort="bin_id">Bin ID</th><th class="sortable-th" data-bin-sort="area_room">Area/Room</th><th class="sortable-th" data-bin-sort="rack_no">Rack</th><th class="sortable-th" data-bin-sort="level">Level</th><th class="sortable-th" data-bin-sort="bin_no">Bin No</th><th class="sortable-th" data-bin-sort="bin_type">Type</th><th class="sortable-th" data-bin-sort="status">Status</th><th class="sortable-th" data-bin-sort="allowed_category">Category</th><th class="sortable-th" data-bin-sort="current_item_codes">Current Item Codes</th><th class="sortable-th" data-bin-sort="label_posted">Label</th><th>Actions</th></tr></thead>
+              <tbody id="binRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="reorderView" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Reorder Point Register</h3>
+            <div class="panel-actions"><button class="ghost-btn compact" data-export-table="reorder">Export Table</button><span id="reorderCount">0 flagged</span></div>
+          </div>
+          <p class="muted">Items are flagged when available quantity is below their editable reorder point. You can change the reorder point and manually enable/disable the flag per item.</p>
+          <div class="table-wrap tall">
+            <table>
+              <thead><tr><th>Item Code</th><th>Description</th><th>Supplier</th><th>Available Qty</th><th>Reorder Point</th><th>UOM</th><th>Bin</th><th>Flag</th><th>Action</th></tr></thead>
+              <tbody id="reorderRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+
+      <section id="ticketsView" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Production Issue Ticket Notifications</h3>
+            <div class="panel-actions"><button class="ghost-btn compact" data-export-table="tickets">Export Table</button><span id="ticketCount">0 tickets</span></div>
+          </div>
+          <p class="muted">Production team requests appear here. Stores can verify availability, issue stock, print the material issue ticket, and move the completed transaction to logs.</p>
+          <div id="ticketCards" class="ticket-stack"></div>
+        </div>
+      </section>
+
+      <section id="movementsView" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Issue Logs</h3>
+            <div class="panel-actions"><button class="ghost-btn compact" data-export-table="movements">Export Table</button><span id="movementCount">0 logs</span></div>
+          </div>
+          <div class="table-wrap tall">
+            <table>
+              <thead><tr><th>Ticket No</th><th>Date</th><th>Work Order</th><th>Issued To</th><th>Items</th><th>Total Qty</th><th>Status</th><th>Action</th></tr></thead>
+              <tbody id="movementRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="settingsView" class="view">
+        <div class="panel setup-panel">
+          <h3>Supabase Setup + Authentication</h3>
+          <p>This dashboard can run locally, but database mode requires Supabase URL, anon/publishable key, and Supabase Auth.</p>
+          <pre><code>window.SNS_SUPABASE_URL = "https://YOUR_PROJECT.supabase.co";
+window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
+          <p>Run <code>supabase-auth-policies.sql</code> after creating users to restrict table access to signed-in users.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="itemModal">
+    <form method="dialog" class="modal-card" id="itemForm">
+      <div class="modal-head"><h3 id="itemModalTitle">Add Inventory Item</h3><button type="button" class="icon-btn" data-close="itemModal">×</button></div>
+      <input type="hidden" id="itemId" />
+      <label>Supplier<input id="supplier" required /></label>
+      <label>Item Code<input id="itemCode" required /></label>
+      <label>Description<textarea id="description" rows="3" required></textarea></label>
+      <div class="form-row"><label>UOM<input id="uom" placeholder="Pcs / Nos / Mtr" /></label><label>Qty<input id="qty" type="number" step="0.01" required /></label></div>
+      <div class="form-row"><label>Status<select id="status"><option>OK</option><option>HOLD</option><option>REJECT</option><option>MRB</option></select></label><label>Bin<input id="bin" placeholder="R2-L4-B2" /></label></div>
+      <label>Part No<input id="partNo" /></label>
+      <button class="primary-btn full" type="submit">Save Item</button>
+    </form>
+  </dialog>
+
+  <dialog id="ncrModal">
+    <form method="dialog" class="modal-card" id="ncrForm">
+      <div class="modal-head"><h3 id="ncrModalTitle">Add Quarantine / NCR</h3><button type="button" class="icon-btn" data-close="ncrModal">×</button></div>
+      <input type="hidden" id="ncrId" />
+      <div class="form-row"><label>NCR No<input id="ncrNo" required /></label><label>PO Ref<input id="poRef" /></label></div>
+      <label>Supplier<input id="ncrSupplier" required /></label>
+      <label>Item Code<input id="ncrItemCode" required /></label>
+      <label>Description<textarea id="ncrDescription" rows="2"></textarea></label>
+      <div class="form-row"><label>Qty on Hold<input id="qtyHold" type="number" step="0.01" /></label><label>Status<select id="ncrStatus"><option>HOLD</option><option>REJECT</option><option>MRB</option><option>OK</option></select></label></div>
+      <label>Reason<textarea id="reason" rows="2"></textarea></label>
+      <div class="form-row"><label>Owner<input id="owner" /></label><label>Target Close<input id="targetClose" type="date" /></label></div>
+      <button class="primary-btn full" type="submit">Save NCR</button>
+    </form>
+  </dialog>
+
+
+  <dialog id="binModal">
+    <form method="dialog" class="modal-card" id="binForm">
+      <div class="modal-head"><h3 id="binModalTitle">Add Bin Location</h3><button type="button" class="icon-btn" data-close="binModal">×</button></div>
+      <input type="hidden" id="binIdHidden" />
+      <div class="form-row"><label>Bin ID<input id="binId" required placeholder="R1-L1-B1" /></label><label>Area/Room<input id="binArea" placeholder="ARMORY" /></label></div>
+      <div class="form-row"><label>Rack No<input id="binRack" /></label><label>Level<input id="binLevel" /></label></div>
+      <div class="form-row"><label>Bin No<input id="binNo" /></label><label>Bin Type<select id="binType"><option>OK</option><option>QUARANTINE</option><option>MRB</option><option>SCRAP</option><option>TOOLS</option></select></label></div>
+      <div class="form-row"><label>Status<select id="binStatus"><option>Active</option><option>Inactive</option></select></label><label>Allowed Category<input id="binCategory" placeholder="RM / STD / WIP / FG / MRO" /></label></div>
+      <label>Current Item Code(s)<input id="binCurrentItems" /></label>
+      <div class="form-row"><label>Label Posted<input id="binLabelPosted" placeholder="Y / N" /></label><label>Notes<input id="binNotes" /></label></div>
+      <button class="primary-btn full" type="submit">Save Bin</button>
+    </form>
+  </dialog>
+
+  <dialog id="issueModal">
+    <form method="dialog" class="modal-card" id="issueForm">
+      <div class="modal-head"><h3>Issue Stock to Production</h3><button type="button" class="icon-btn" data-close="issueModal">×</button></div>
+      <input type="hidden" id="issueItemId" />
+      <div class="issue-summary"><strong id="issueItemCode"></strong><span id="issueItemDescription"></span><small>Available: <b id="issueAvailableQty"></b></small></div>
+      <div class="form-row"><label>Qty Taken<input id="issueQty" type="number" step="0.01" min="0.01" required /></label><label>Issued To<input id="issueTo" value="Production" /></label></div>
+      <label>Work Order / Job Ref<input id="issueWorkOrder" /></label>
+      <label>Notes<textarea id="issueNotes" rows="2"></textarea></label>
+      <button class="primary-btn full" type="submit">Issue & Update Stock</button>
+    </form>
+  </dialog>
+
+
+  <dialog id="issueLogModal">
+    <div class="modal-card log-detail-card">
+      <div class="modal-head"><h3 id="issueLogTitle">Issue Log Details</h3><button type="button" class="icon-btn" data-close="issueLogModal">×</button></div>
+      <div id="issueLogMeta" class="log-meta-grid"></div>
+      <div class="table-wrap"><table><thead><tr><th>S.No</th><th>Item Code</th><th>Description</th><th>Bin</th><th>Qty Issued</th><th>Before</th><th>After</th></tr></thead><tbody id="issueLogDetailRows"></tbody></table></div>
+      <button class="primary-btn full" type="button" id="issueLogPrintBtn">Print Log</button>
+    </div>
+  </dialog>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
