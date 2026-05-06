@@ -281,7 +281,7 @@
           <p class="muted">Inventory team can record reverse stock returns against issued tickets. Saving a return log adds the quantity back into inventory and creates reverse movement entries.</p>
           <div class="table-wrap tall">
             <table>
-              <thead><tr><th>Return No</th><th>Date</th><th>Source Ticket</th><th>Returned By</th><th>Items</th><th>Total Qty</th><th>Action</th></tr></thead>
+              <thead><tr><th>Return No</th><th>Date</th><th>Source Ticket</th><th>Returned By</th><th>Items</th><th>Total Qty</th><th>Mail</th><th>Action</th></tr></thead>
               <tbody id="returnRows"></tbody>
             </table>
           </div>
@@ -380,8 +380,12 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
         <label>Returned By <em>*</em><input id="returnedBy" placeholder="Production / Department" required /></label>
       </div>
       <div class="dc-form-grid">
+        <label>Returned By Email <em>*</em><input id="returnedByEmail" type="email" placeholder="name@company.com" required /></label>
         <label>Received By (Inventory) <em>*</em><input id="receivedBy" placeholder="Inventory team member" required /></label>
+      </div>
+      <div class="dc-form-grid">
         <label>Notes<input id="returnNotes" placeholder="Reason / condition / reference" /></label>
+        <label>Approval Mail Status<input id="approvalMailStatus" value="Will send after save" disabled /></label>
       </div>
       <div class="return-line-wrap">
         <div class="return-line-head"><span>Item</span><span>Issued</span><span>Already Returned</span><span>Returnable</span><span>Qty Returning</span><span>Bin</span></div>

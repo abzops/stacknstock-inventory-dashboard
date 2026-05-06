@@ -1345,9 +1345,13 @@ function normalizeReturnLog(row){
     return_date: row.return_date || new Date().toISOString().slice(0,10),
     source_ticket_no: row.source_ticket_no || '',
     returned_by: row.returned_by || '',
+    returned_by_email: row.returned_by_email || '',
     received_by: row.received_by || '',
     notes: row.notes || '',
     total_qty: Number(row.total_qty || 0),
+    approval_mail_sent: !!row.approval_mail_sent,
+    approval_mail_sent_at: row.approval_mail_sent_at || null,
+    approval_mail_error: row.approval_mail_error || '',
     created_by: row.created_by || null,
     created_by_email: row.created_by_email || '',
     created_at: row.created_at || new Date().toISOString(),
@@ -1373,7 +1377,7 @@ function normalizeReturnLogLine(row){
 }
 function makeReturnNo(){ return `RET-${new Date().getFullYear()}-${String(Math.floor(Math.random()*9000)+1000)}`; }
 function returnLogLinesFor(returnId){ return state.returnLogLines.filter((x)=>x.return_id===returnId); }
-function returnExportRows(){ return state.returnLogs.map((r)=>({ ReturnNo:r.return_no, Date:r.return_date, SourceTicket:r.source_ticket_no, ReturnedBy:r.returned_by, ReceivedBy:r.received_by, TotalQty:r.total_qty, Notes:r.notes })); }
+function returnExportRows(){ return state.returnLogs.map((r)=>({ ReturnNo:r.return_no, Date:r.return_date, SourceTicket:r.source_ticket_no, ReturnedBy:r.returned_by, ReturnedByEmail:r.returned_by_email, ReceivedBy:r.received_by, TotalQty:r.total_qty, ApprovalMailSent:r.approval_mail_sent ? 'Yes' : 'No', ApprovalMailSentAt:r.approval_mail_sent_at || '', ApprovalMailError:r.approval_mail_error || '', Notes:r.notes })); }
 function issueLogGroups(){
   const map = new Map();
   const issueMoves = state.movements.filter((m)=>String(m.movement_type || '').toUpperCase() !== 'PRODUCTION_RETURN');
@@ -1428,6 +1432,8 @@ function openReturnModal(sourceTicket=''){
   const chosenTicket = sourceTicket || groups[0]?.ticket_no || '';
   if ($('returnSourceTicket')) $('returnSourceTicket').innerHTML = returnSourceOptions(chosenTicket);
   if ($('returnedBy')) $('returnedBy').value = '';
+  if ($('returnedByEmail')) $('returnedByEmail').value = '';
+  if ($('approvalMailStatus')) $('approvalMailStatus').value = 'Will send after save';
   if ($('receivedBy')) $('receivedBy').value = state.user?.email || '';
   state.returnDraftLines = [];
   if (chosenTicket) buildReturnDraftLines(chosenTicket);
@@ -1437,6 +1443,26 @@ function openReturnModal(sourceTicket=''){
 }
 window.openReturnModal = openReturnModal;
 window.openReturnLogBySource = openReturnModal;
+
+async function sendReturnApprovalMailWithTimeout(returnId, timeoutMs = 12000) {
+  if (!state.dbReady || !state.supabase?.functions) {
+    return { error: new Error('Supabase functions are not available') };
+  }
+
+  const mailPromise = state.supabase.functions.invoke(
+    'send-return-approval-mail',
+    { body: { return_id: returnId } }
+  );
+
+  const timeoutPromise = new Promise((resolve) => {
+    setTimeout(() => {
+      resolve({ error: new Error('Approval mail request timed out') });
+    }, timeoutMs);
+  });
+
+  return Promise.race([mailPromise, timeoutPromise]);
+}
+
 async function saveReturnLog(e){
   e.preventDefault();
   if (state.returnSaveInProgress) return;
@@ -1447,6 +1473,9 @@ async function saveReturnLog(e){
   try {
     const sourceTicket = $('returnSourceTicket')?.value || '';
     if (!sourceTicket) return setReturnMsg('Select the source issue ticket.', false);
+    const returnedByEmail = $('returnedByEmail')?.value?.trim() || '';
+    if (!returnedByEmail) return setReturnMsg('Returned By Email is mandatory.', false);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(returnedByEmail)) return setReturnMsg('Enter a valid Returned By Email address.', false);
     const valid = state.returnDraftLines.filter((x)=>Number(x.qty_returned || 0) > 0);
     if (!valid.length) return setReturnMsg('Enter at least one return quantity greater than 0.', false);
     for (const l of valid) {
@@ -1461,9 +1490,13 @@ async function saveReturnLog(e){
       return_date: $('returnDate').value,
       source_ticket_no: sourceTicket,
       returned_by: $('returnedBy').value.trim(),
+      returned_by_email: returnedByEmail,
       received_by: $('receivedBy').value.trim(),
       notes: $('returnNotes').value.trim(),
       total_qty: totalQty,
+      approval_mail_sent: false,
+      approval_mail_sent_at: null,
+      approval_mail_error: null,
       created_by: state.user?.id || null,
       created_by_email: state.user?.email || '',
       created_at: now,
@@ -1512,6 +1545,45 @@ async function saveReturnLog(e){
       }
     }
 
+    if (state.dbReady) {
+      if ($('approvalMailStatus')) $('approvalMailStatus').value = 'Sending approval mail...';
+      try {
+        const { error: mailErr } = await sendReturnApprovalMailWithTimeout(ret.id, 12000);
+
+        if (mailErr) {
+          ret.approval_mail_sent = false;
+          ret.approval_mail_error = mailErr.message || String(mailErr);
+          await state.supabase
+            .from('return_logs')
+            .update({
+              approval_mail_sent: false,
+              approval_mail_error: ret.approval_mail_error,
+            })
+            .eq('id', ret.id);
+          if ($('approvalMailStatus')) $('approvalMailStatus').value = 'Mail failed';
+          setReturnMsg(`Return log ${ret.return_no} saved, but approval email failed: ${ret.approval_mail_error}`, false);
+        } else {
+          ret.approval_mail_sent = true;
+          ret.approval_mail_sent_at = new Date().toISOString();
+          ret.approval_mail_error = null;
+          if ($('approvalMailStatus')) $('approvalMailStatus').value = 'Mail sent';
+          setReturnMsg(`Return log ${ret.return_no} saved and approval email sent to ${ret.returned_by_email}.`, true);
+        }
+      } catch (mailErr) {
+        ret.approval_mail_sent = false;
+        ret.approval_mail_error = mailErr?.message || String(mailErr);
+        await state.supabase
+          .from('return_logs')
+          .update({
+            approval_mail_sent: false,
+            approval_mail_error: ret.approval_mail_error,
+          })
+          .eq('id', ret.id);
+        if ($('approvalMailStatus')) $('approvalMailStatus').value = 'Mail failed';
+        setReturnMsg(`Return log ${ret.return_no} saved, but approval email failed/timed out.`, false);
+      }
+    }
+
     for (const updated of updatedItems) {
       const idx = state.inventory.findIndex((x)=>x.id===updated.id || x.item_code===updated.item_code);
       if (idx >= 0) state.inventory[idx] = normalizeItem(updated);
@@ -1520,7 +1592,9 @@ async function saveReturnLog(e){
     state.returnLogLines.push(...lines);
     state.movements.unshift(...movements);
     persistLocal();
-    setReturnMsg(`Return log ${ret.return_no} saved. Quantity returned: ${moneyish(totalQty)}.`, true);
+    if (!state.dbReady) {
+      setReturnMsg(`Return log ${ret.return_no} saved locally. Quantity returned: ${moneyish(totalQty)}.`, true);
+    }
     renderAll();
     setTimeout(() => $('returnModal')?.close(), 350);
   } finally {
@@ -1536,7 +1610,7 @@ window.viewReturnLog = function(id){
   const ret = state.returnLogs.find((x)=>x.id===id); if (!ret) return;
   const lines = returnLogLinesFor(id);
   $('returnDetailTitle').textContent = `Return Log - ${ret.return_no}`;
-  $('returnDetailMeta').innerHTML = `<div><span>Return No</span><strong>${escapeHtml(ret.return_no)}</strong></div><div><span>Date</span><strong>${escapeHtml(ret.return_date)}</strong></div><div><span>Source Ticket</span><strong>${escapeHtml(ret.source_ticket_no)}</strong></div><div><span>Returned By</span><strong>${escapeHtml(ret.returned_by)}</strong></div><div><span>Received By</span><strong>${escapeHtml(ret.received_by)}</strong></div><div><span>Total Qty</span><strong>${moneyish(ret.total_qty)}</strong></div>`;
+  $('returnDetailMeta').innerHTML = `<div><span>Return No</span><strong>${escapeHtml(ret.return_no)}</strong></div><div><span>Date</span><strong>${escapeHtml(ret.return_date)}</strong></div><div><span>Source Ticket</span><strong>${escapeHtml(ret.source_ticket_no)}</strong></div><div><span>Returned By</span><strong>${escapeHtml(ret.returned_by)}</strong></div><div><span>Returned By Email</span><strong>${escapeHtml(ret.returned_by_email || '-')}</strong></div><div><span>Received By</span><strong>${escapeHtml(ret.received_by)}</strong></div><div><span>Total Qty</span><strong>${moneyish(ret.total_qty)}</strong></div><div><span>Approval Mail</span><strong>${ret.approval_mail_sent ? 'Sent' : (ret.approval_mail_error ? 'Failed' : 'Not sent')}</strong></div>`;
   $('returnDetailRows').innerHTML = lines.map((l,i)=>`<tr><td>${i+1}</td><td><strong>${escapeHtml(l.item_code)}</strong></td><td>${escapeHtml(l.description)}</td><td>${escapeHtml(l.from_bin || '')}</td><td>${moneyish(l.qty_issued)}</td><td>${moneyish(l.qty_returned)}</td></tr>`).join('') || emptyRow(6);
   $('returnPrintBtn').onclick = ()=>printReturnLog(id);
   $('returnDetailModal')?.showModal();
@@ -1607,7 +1681,7 @@ This cannot be undone.`);
 function renderReturns(){
   if (!$('returnRows')) return;
   $('returnCount').textContent = `${state.returnLogs.length} logs`;
-  $('returnRows').innerHTML = state.returnLogs.map((r)=>{ const lines = returnLogLinesFor(r.id); return `<tr><td><strong>${escapeHtml(r.return_no)}</strong></td><td>${escapeHtml(r.return_date)}</td><td>${escapeHtml(r.source_ticket_no)}</td><td>${escapeHtml(r.returned_by)}</td><td>${lines.length}</td><td>${moneyish(r.total_qty)}</td><td><div class="return-action-row"><button class="ghost-btn compact" onclick="viewReturnLog('${r.id}')">View</button><button class="mini-btn" onclick="printReturnLog('${r.id}')">Print</button><button class="mini-btn danger" onclick="deleteReturnLog('${r.id}')">Delete</button></div></td></tr>`; }).join('') || emptyRow(7);
+  $('returnRows').innerHTML = state.returnLogs.map((r)=>{ const lines = returnLogLinesFor(r.id); return `<tr><td><strong>${escapeHtml(r.return_no)}</strong></td><td>${escapeHtml(r.return_date)}</td><td>${escapeHtml(r.source_ticket_no)}</td><td>${escapeHtml(r.returned_by)}<br><span class="muted">${escapeHtml(r.returned_by_email || '')}</span></td><td>${lines.length}</td><td>${moneyish(r.total_qty)}</td><td>${r.approval_mail_sent ? '<span class="status OK">MAIL SENT</span>' : (r.approval_mail_error ? '<span class="status REJECT">MAIL FAILED</span>' : '<span class="muted">Not sent</span>')}</td><td><div class="return-action-row"><button class="ghost-btn compact" onclick="viewReturnLog('${r.id}')">View</button><button class="mini-btn" onclick="printReturnLog('${r.id}')">Print</button><button class="mini-btn danger" onclick="deleteReturnLog('${r.id}')">Delete</button></div></td></tr>`; }).join('') || emptyRow(8);
 }
 
 const __v65_loadData = loadData;
