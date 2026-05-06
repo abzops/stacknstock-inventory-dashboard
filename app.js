@@ -9,6 +9,8 @@ const state = {
   status: "",
   supplier: "",
   supabase: null,
+  priceSupabase: null,
+  priceDbReady: false,
   dbReady: false,
   user: null,
 };
@@ -135,6 +137,15 @@ function setupSupabase() {
     state.dbReady = true;
     $("connectionStatus").textContent = "Supabase connected";
     $("connectionHelp").textContent = "Connected to Supabase. Inventory changes sync with the database.";
+  }
+
+  // Optional second Supabase connection for Procurement Hub product/price data.
+  // This is intentionally separate from the inventory database connection.
+  if (window.SNS_PRICE_SUPABASE_URL && window.SNS_PRICE_SUPABASE_ANON_KEY && window.supabase) {
+    state.priceSupabase = window.supabase.createClient(window.SNS_PRICE_SUPABASE_URL, window.SNS_PRICE_SUPABASE_ANON_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
+    });
+    state.priceDbReady = true;
   }
 }
 
@@ -1333,5 +1344,485 @@ function ticketPrintHtml(ticket, lines) {
   const lineRows = [...lines, ...Array(Math.max(0, 8 - lines.length)).fill({})].map((l, i) => `<tr><td>${i + 1}</td><td>${escapeHtml(l.item_code || '')}</td><td>${escapeHtml(l.part_no || '')}</td><td>${escapeHtml(l.description || '')}</td><td>${escapeHtml(l.lot_trace_id || '')}</td><td>${escapeHtml(l.from_bin || '')}</td><td>${escapeHtml(l.uom || '')}</td><td>${moneyish(l.qty_issued || l.qty_requested || '')}</td></tr>`).join('');
   return `<!doctype html><html><head><title>${escapeHtml(ticket.ticket_no)}</title><style>body{font-family:Arial,sans-serif;color:#111;margin:24px}.ticket{max-width:980px;margin:auto;border:2px solid #111;padding:18px}.title{text-align:center;font-weight:800;font-size:20px;margin-bottom:14px}.grid{display:grid;grid-template-columns:190px 1fr 190px 1fr;border-top:1px solid #111;border-left:1px solid #111}.grid div{padding:8px;border-right:1px solid #111;border-bottom:1px solid #111}.label{font-weight:700;background:#f1f1f1}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{border:1px solid #111;padding:7px;font-size:12px;vertical-align:top}th{background:#f1f1f1}.sign{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;margin-top:28px}.sign div{border-top:1px solid #111;padding-top:8px;text-align:center}.note{font-size:11px;margin-top:12px}@media print{button{display:none}.ticket{border:2px solid #000}}</style></head><body><div class="ticket"><div class="title">MATERIAL ISSUE TICKET / ISSUE LOG</div><div class="grid"><div class="label">Issue No</div><div>${escapeHtml(ticket.ticket_no)}</div><div class="label">Issue Date</div><div>${new Date(ticket.issued_at || ticket.created_at).toLocaleDateString()}</div><div class="label">Work Order / Job</div><div>${escapeHtml(ticket.work_order)}</div><div class="label">Department</div><div>${escapeHtml(ticket.department)}</div><div class="label">Return Expected? (Y/N)</div><div>${escapeHtml(ticket.return_expected)}</div><div class="label">Status</div><div>${escapeHtml(ticket.status)}</div><div class="label">Issued By (Stores)</div><div>${escapeHtml(ticket.issued_by)}</div><div class="label">Received By (Production)</div><div>${escapeHtml(ticket.received_by)}</div></div><table><thead><tr><th>S.No</th><th>Item Code</th><th>Part No</th><th>Description</th><th>Lot/Trace ID</th><th>From Bin</th><th>UOM</th><th>Qty Issued</th></tr></thead><tbody>${lineRows}</tbody></table><div class="sign"><div>Stores Signature</div><div>Production Signature</div><div>Verified By</div></div><p class="note">Generated from Stack n Stock Inventory OS. Notes: ${escapeHtml(ticket.notes)}</p></div></body></html>`;
 }
+
+
+// ===== v6: Delivery Challan module =====
+state.deliveryProducts = state.deliveryProducts || [];
+state.deliveryChallans = state.deliveryChallans || [];
+state.deliveryLines = state.deliveryLines || [];
+state.dcDraftLines = state.dcDraftLines || [];
+
+function priceDbConfig(){
+  return {
+    table: window.SNS_PRICE_TABLE || 'po_lines',
+    itemCode: window.SNS_PRICE_ITEM_CODE_COLUMN || 'line_id',
+    itemName: window.SNS_PRICE_ITEM_NAME_COLUMN || 'item_desc',
+    price: window.SNS_PRICE_PRICE_COLUMN || 'line_grand_total',
+    tax: window.SNS_PRICE_TAX_COLUMN || 'item_tax_percent',
+    qty: window.SNS_PRICE_QTY_COLUMN || 'quantity_ordered',
+    po: window.SNS_PRICE_PO_COLUMN || 'po_number',
+    vendor: window.SNS_PRICE_VENDOR_COLUMN || 'vendor_name',
+  };
+}
+function normalizePriceProduct(row){
+  const cfg = priceDbConfig();
+  const fromProcurement = row && Object.prototype.hasOwnProperty.call(row, cfg.itemName);
+  if (fromProcurement) {
+    const name = row[cfg.itemName] || '';
+    const codeValue = row[cfg.itemCode] || row.id || row[cfg.po] || name;
+    const po = row[cfg.po] || '';
+    return {
+      id: String(row.id || codeValue || uid()),
+      item_code: String(codeValue || name || uid()),
+      description: name,
+      hsn_sac: row.hsn_sac || row.hsn_code || row.hsn || '',
+      uom: row.uom || row.unit || 'Nos',
+      default_rate: Number(row[cfg.price] || 0),
+      gst_percent: Number(row[cfg.tax] || 0),
+      supplier: row[cfg.vendor] || row.vendor || row.vendor_name || '',
+      part_no: po ? `PO: ${po}` : '',
+      available_qty: Number(row[cfg.qty] || 0),
+      source: 'Procurement Hub',
+      active: true
+    };
+  }
+  return { id: row.id || uid(), item_code: row.item_code || '', description: row.description || '', hsn_sac: row.hsn_sac || '', uom: row.uom || '', default_rate: Number(row.default_rate || row.rate || 0), gst_percent: Number(row.gst_percent || 0), supplier: row.supplier || '', part_no: row.part_no || '', active: row.active !== false };
+}
+function normalizeChallan(row){ return { id: row.id || uid(), challan_no: row.challan_no || makeChallanNo(), challan_date: row.challan_date || new Date().toISOString().slice(0,10), po_so_ref: row.po_so_ref || '', eway_bill_no: row.eway_bill_no || '', mode_of_transport: row.mode_of_transport || 'Road / Courier', place_of_supply: row.place_of_supply || '', bill_to_name: row.bill_to_name || '', bill_to_address: row.bill_to_address || '', bill_to_gstin: row.bill_to_gstin || '', bill_to_contact: row.bill_to_contact || '', ship_to_address: row.ship_to_address || '', ship_to_contact: row.ship_to_contact || '', purpose: row.purpose || 'Delivery', expected_return_date: row.expected_return_date || 'N/A', prepared_by: row.prepared_by || '', authorized_by: row.authorized_by || '', remarks: row.remarks || '', total_qty: Number(row.total_qty || 0), total_amount: Number(row.total_amount || 0), created_by: row.created_by || null, created_by_email: row.created_by_email || '', created_at: row.created_at || new Date().toISOString(), updated_at: row.updated_at || new Date().toISOString() }; }
+function normalizeChallanLine(row){ return { id: row.id || uid(), challan_id: row.challan_id || '', sl_no: Number(row.sl_no || 0), item_code: row.item_code || '', description: row.description || '', hsn_sac: row.hsn_sac || '', uom: row.uom || '', qty: Number(row.qty || 0), rate: Number(row.rate || 0), amount: Number(row.amount || 0), gst_percent: Number(row.gst_percent || 0), box_serial_no: row.box_serial_no || '', remarks: row.remarks || '' }; }
+function makeChallanNo(){ return `DC-${new Date().getFullYear()}-${String(Math.floor(Math.random()*9000)+1000)}`; }
+
+const __v6_loadData = loadData;
+loadData = async function(){
+  await __v6_loadData();
+  if (state.dbReady && state.user) {
+    const productClient = state.priceDbReady ? state.priceSupabase : state.supabase;
+    const cfg = priceDbConfig();
+    const productQuery = state.priceDbReady
+      ? productClient.from(cfg.table).select('*').limit(1000)
+      : productClient.from('product_price_master').select('*').eq('active', true).order('item_code', { ascending: true });
+
+    const [pm, dc, dl] = await Promise.all([
+      productQuery,
+      state.supabase.from('delivery_challans').select('*').order('created_at', { ascending: false }),
+      state.supabase.from('delivery_challan_lines').select('*')
+    ]);
+
+    if (pm.error) {
+      console.warn('Delivery challan product source skipped.', pm.error);
+      if ($('connectionHelp')) $('connectionHelp').textContent = `Delivery Challan product source error: ${pm.error.message}`;
+    }
+    if (dc.error) console.warn('Delivery challans skipped. Run v6 migration.', dc.error);
+    if (dl.error) console.warn('Delivery challan lines skipped. Run v6 migration.', dl.error);
+
+    state.deliveryProducts = (pm.data || []).map(normalizePriceProduct).filter(p => p.description || p.item_code);
+    state.deliveryChallans = (dc.data || []).map(normalizeChallan);
+    state.deliveryLines = (dl.data || []).map(normalizeChallanLine);
+  }
+  if (!state.deliveryProducts.length) {
+    state.deliveryProducts = state.inventory.map(x => normalizePriceProduct({ item_code:x.item_code, description:x.description, uom:x.uom, supplier:x.supplier, part_no:x.part_no, default_rate:0, gst_percent:0 }));
+  }
+};
+
+const __v6_renderAll = renderAll;
+renderAll = function(){ __v6_renderAll(); renderDeliveryChallan(); };
+
+const __v6_bindEvents = bindEvents;
+bindEvents = function(){
+  __v6_bindEvents();
+  $('newChallanBtn')?.addEventListener('click', resetChallanForm);
+  $('addDcLineBtn')?.addEventListener('click', addDcLine);
+  $('challanForm')?.addEventListener('submit', saveDeliveryChallan);
+};
+
+function resetChallanForm(){
+  $('challanForm')?.reset();
+  if ($('dcNo')) $('dcNo').value = makeChallanNo();
+  if ($('dcDate')) $('dcDate').value = new Date().toISOString().slice(0,10);
+  if ($('dcTransport')) $('dcTransport').value = 'Road / Courier';
+  if ($('dcPurpose')) $('dcPurpose').value = 'Delivery';
+  if ($('dcReturnDate')) $('dcReturnDate').value = 'N/A';
+  state.dcDraftLines = [];
+  addDcLine();
+  renderDcLines();
+  setChallanMsg('', false);
+}
+function productOptions(selected=''){
+  return ['<option value="">Select product from Procurement Hub</option>'].concat(state.deliveryProducts.map(p => {
+    const meta = [p.supplier, p.part_no, `Price: ${moneyish(p.default_rate)}`].filter(Boolean).join(' | ');
+    const label = `${p.description || p.item_code}${meta ? ' - ' + meta : ''}`;
+    return `<option value="${escapeHtml(p.item_code)}" ${p.item_code===selected?'selected':''}>${escapeHtml(label)}</option>`;
+  })).join('');
+}
+function addDcLine(){ state.dcDraftLines.push({ id:uid(), item_code:'', description:'', hsn_sac:'', uom:'Nos', qty:1, rate:0, gst_percent:0, box_serial_no:'', remarks:'' }); renderDcLines(); }
+window.removeDcLine = function(id){ state.dcDraftLines = state.dcDraftLines.filter(x=>x.id!==id); renderDcLines(); };
+window.updateDcProduct = function(id, code){ const line=state.dcDraftLines.find(x=>x.id===id); const p=state.deliveryProducts.find(x=>x.item_code===code); if(line && p){ Object.assign(line,{ item_code:p.item_code, description:p.description, hsn_sac:p.hsn_sac, uom:p.uom || 'Nos', rate:Number(p.default_rate||0), gst_percent:Number(p.gst_percent||0) }); } renderDcLines(); };
+window.updateDcLine = function(id, key, value){ const line=state.dcDraftLines.find(x=>x.id===id); if(!line) return; line[key] = ['qty','rate','gst_percent'].includes(key) ? Number(value||0) : value; renderDcLines(false); };
+function renderDcLines(rebuild=true){
+  if (!$('dcLineRows')) return;
+  if (rebuild) $('dcLineRows').innerHTML = state.dcDraftLines.map((l,idx) => `<div class="dc-line-card"><div class="dc-line-top"><div class="dc-item-pane"><div class="dc-line-no">Line ${idx+1}</div><select class="dc-select dc-select-wide" onchange="updateDcProduct('${l.id}', this.value)" required>${productOptions(l.item_code)}</select><span class="dc-description">${escapeHtml(l.description||'Product description will appear here')}</span></div></div><div class="dc-fields-grid"><label><span>HSN/SAC</span><input class="dc-field-input" value="${escapeHtml(l.hsn_sac)}" onchange="updateDcLine('${l.id}','hsn_sac',this.value)" /></label><label><span>UOM</span><input class="dc-field-input" value="${escapeHtml(l.uom)}" onchange="updateDcLine('${l.id}','uom',this.value)" required /></label><label><span>Qty</span><input class="dc-field-input" type="number" min="0.01" step="0.01" value="${l.qty}" onchange="updateDcLine('${l.id}','qty',this.value)" required /></label><label><span>Rate</span><input class="dc-field-input" type="number" min="0" step="0.01" value="${l.rate}" onchange="updateDcLine('${l.id}','rate',this.value)" /></label><label><span>GST %</span><input class="dc-field-input" type="number" min="0" step="0.01" value="${l.gst_percent}" onchange="updateDcLine('${l.id}','gst_percent',this.value)" /></label><label class="dc-serial-field"><span>Box / Serial</span><input class="dc-field-input" value="${escapeHtml(l.box_serial_no)}" placeholder="Box / Serial" onchange="updateDcLine('${l.id}','box_serial_no',this.value)" /></label><div class="dc-remove-field"><span>Remove</span><button type="button" class="mini-btn danger" onclick="removeDcLine('${l.id}')">Remove</button></div></div></div>`).join('') || `<div class="dc-empty-state">No products added yet. Click <b>+ Add Product</b> to start.</div>`;
+  const totalQty = state.dcDraftLines.reduce((s,x)=>s+Number(x.qty||0),0);
+  const totalAmt = state.dcDraftLines.reduce((s,x)=>s+Number(x.qty||0)*Number(x.rate||0),0);
+  if ($('dcTotalQty')) $('dcTotalQty').textContent = moneyish(totalQty);
+  if ($('dcTotalAmount')) $('dcTotalAmount').textContent = moneyish(totalAmt);
+}
+function renderDeliveryChallan(){
+  document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active-view', v.id === `${state.view}View`));
+  if (state.view !== 'delivery') return;
+  if (!$('dcNo')?.value) resetChallanForm(); else renderDcLines();
+  const rows = state.deliveryChallans.map(dc => {
+    const lines = state.deliveryLines.filter(l=>l.challan_id===dc.id);
+    return `<tr><td><strong>${escapeHtml(dc.challan_no)}</strong></td><td>${escapeHtml(dc.challan_date)}</td><td>${escapeHtml(dc.bill_to_name)}</td><td>${escapeHtml(dc.purpose)}</td><td>${lines.length}</td><td>${moneyish(dc.total_amount)}</td><td><div class="dc-action-row"><button class="mini-btn" onclick="openDeliveryChallan('${dc.id}')">View</button><button class="mini-btn" onclick="printDeliveryChallan('${dc.id}')">Print</button></div></td></tr>`;
+  }).join('');
+  if ($('deliveryRows')) $('deliveryRows').innerHTML = rows || emptyRow(7);
+  if ($('challanCount')) $('challanCount').textContent = `${state.deliveryChallans.length} challans`;
+  if ($('dcRegisterCount')) $('dcRegisterCount').textContent = `${state.deliveryChallans.length} records`;
+}
+async function saveDeliveryChallan(e){
+  e.preventDefault();
+  const valid = state.dcDraftLines.filter(l=>l.item_code && Number(l.qty)>0);
+  if (!valid.length) return setChallanMsg('Add at least one product with quantity.', false);
+  const required=['dcNo','dcDate','dcPlace','dcBillName','dcBillAddress','dcShipAddress','dcPurpose','dcPreparedBy'];
+  for (const id of required){ if(!String($(id).value||'').trim()){ $(id).focus(); return setChallanMsg('Please complete all mandatory fields.', false); } }
+  const totalQty=valid.reduce((s,x)=>s+Number(x.qty||0),0), totalAmount=valid.reduce((s,x)=>s+Number(x.qty||0)*Number(x.rate||0),0);
+  const dc=normalizeChallan({ id:uid(), challan_no:$('dcNo').value.trim(), challan_date:$('dcDate').value, po_so_ref:$('dcPoRef').value.trim(), eway_bill_no:$('dcEway').value.trim(), mode_of_transport:$('dcTransport').value.trim(), place_of_supply:$('dcPlace').value.trim(), bill_to_name:$('dcBillName').value.trim(), bill_to_address:$('dcBillAddress').value.trim(), bill_to_gstin:$('dcBillGstin').value.trim(), bill_to_contact:$('dcBillContact').value.trim(), ship_to_address:$('dcShipAddress').value.trim(), ship_to_contact:$('dcShipContact').value.trim(), purpose:$('dcPurpose').value, expected_return_date:$('dcReturnDate').value.trim() || 'N/A', prepared_by:$('dcPreparedBy').value.trim(), authorized_by:$('dcAuthorizedBy').value.trim(), remarks:$('dcRemarks').value.trim(), total_qty:totalQty, total_amount:totalAmount, created_by:state.user?.id||null, created_by_email:state.user?.email||'', created_at:new Date().toISOString(), updated_at:new Date().toISOString() });
+  const lines=valid.map((l,i)=>normalizeChallanLine({...l, id:uid(), challan_id:dc.id, sl_no:i+1, amount:Number(l.qty||0)*Number(l.rate||0)}));
+  if(state.dbReady){
+    const {error:e1}=await state.supabase.from('delivery_challans').insert(dc); if(e1) return setChallanMsg(`Delivery challan save failed: ${e1.message}`, false);
+    const {error:e2}=await state.supabase.from('delivery_challan_lines').insert(lines); if(e2) return setChallanMsg(`Delivery challan lines save failed: ${e2.message}`, false);
+  }
+  state.deliveryChallans.unshift(dc); state.deliveryLines.push(...lines);
+  setChallanMsg(`Success: Delivery Challan ${dc.challan_no} saved. Items: ${lines.length}, Amount: ${moneyish(totalAmount)}.`, true);
+  renderDeliveryChallan();
+}
+function setChallanMsg(msg, success=false){ if($('challanMessage')){ $('challanMessage').textContent=msg; $('challanMessage').classList.toggle('success',!!success); } }
+window.openDeliveryChallan=function(id){ printDeliveryChallan(id, false); };
+window.printDeliveryChallan=function(id, doPrint=true){
+  const dc=state.deliveryChallans.find(x=>x.id===id); if(!dc) return;
+  const lines=state.deliveryLines.filter(l=>l.challan_id===id).sort((a,b)=>a.sl_no-b.sl_no);
+  const html=deliveryChallanHtml(dc, lines, doPrint);
+  const w=window.open('', '_blank', 'width=1120,height=800'); w.document.write(html); w.document.close(); w.focus(); if(doPrint) setTimeout(()=>w.print(),400);
+};
+function deliveryChallanHtml(dc, lines, doPrint){
+  const rows=[...lines,...Array(Math.max(0,15-lines.length)).fill({})].map((l,i)=>`<tr><td>${i+1}</td><td>${escapeHtml(l.item_code||'')}</td><td>${escapeHtml(l.description||'')}</td><td>${escapeHtml(l.hsn_sac||'')}</td><td>${escapeHtml(l.uom||'')}</td><td>${l.qty?moneyish(l.qty):''}</td><td>${l.rate?moneyish(l.rate):''}</td><td>${l.amount?moneyish(l.amount):''}</td><td>${l.gst_percent?moneyish(l.gst_percent):''}</td><td>${escapeHtml(l.box_serial_no||'')}</td><td>${escapeHtml(l.remarks||'')}</td></tr>`).join('');
+  return `<!doctype html><html><head><title>${escapeHtml(dc.challan_no)}</title><style>body{font-family:Arial,sans-serif;color:#111;margin:18px}.sheet{max-width:1180px;margin:auto;border:2px solid #111;padding:16px}.title{text-align:center;font-size:22px;font-weight:800}.grid{display:grid;grid-template-columns:150px 1fr 150px 1fr;border-left:1px solid #111;border-top:1px solid #111;margin-top:12px}.grid div{border-right:1px solid #111;border-bottom:1px solid #111;padding:6px;font-size:12px}.label{font-weight:700;background:#eee}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #111;padding:5px;font-size:11px;vertical-align:top}th{background:#eee}.terms{margin-top:12px;font-size:11px}.sign{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-top:34px}.sign div{border-top:1px solid #111;text-align:center;padding-top:6px;font-size:12px}.printbar{text-align:right;margin-bottom:8px}@media print{.printbar{display:none}.sheet{border:2px solid #000}}</style></head><body><div class="printbar"><button onclick="window.print()">Print Delivery Challan</button></div><div class="sheet"><div class="title">DELIVERY CHALLAN</div><div class="grid"><div class="label">From / Company</div><div>Stack n Stock</div><div class="label">Challan No.</div><div>${escapeHtml(dc.challan_no)}</div><div class="label">Address</div><div>Kerala, India</div><div class="label">Challan Date</div><div>${escapeHtml(dc.challan_date)}</div><div class="label">GSTIN</div><div>____________________</div><div class="label">PO / SO Ref.</div><div>${escapeHtml(dc.po_so_ref)}</div><div class="label">Email / Phone</div><div>____________________</div><div class="label">E-Way Bill No.</div><div>${escapeHtml(dc.eway_bill_no)}</div><div class="label">Dispatch Contact</div><div>____________________</div><div class="label">Mode / Place</div><div>${escapeHtml(dc.mode_of_transport)} / ${escapeHtml(dc.place_of_supply)}</div><div class="label">Bill To</div><div>${escapeHtml(dc.bill_to_name)}<br>${escapeHtml(dc.bill_to_address)}<br>GSTIN: ${escapeHtml(dc.bill_to_gstin)}<br>Contact: ${escapeHtml(dc.bill_to_contact)}</div><div class="label">Ship To</div><div>${escapeHtml(dc.ship_to_address)}<br>Contact: ${escapeHtml(dc.ship_to_contact)}<br>Purpose: ${escapeHtml(dc.purpose)}<br>Expected Return: ${escapeHtml(dc.expected_return_date)}</div></div><table><thead><tr><th>Sl No.</th><th>Item Code</th><th>Description</th><th>HSN/SAC</th><th>UOM</th><th>Qty</th><th>Rate</th><th>Amount</th><th>GST %</th><th>Box / Serial No.</th><th>Remarks</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><th colspan="5">Total</th><th>${moneyish(dc.total_qty)}</th><th></th><th>${moneyish(dc.total_amount)}</th><th colspan="3"></th></tr></tfoot></table><div class="terms"><strong>Declaration / Terms:</strong><br>1. The goods listed above are delivered as per the stated purpose and are not an invoice unless separately stated.<br>2. Receiver should verify item description, quantity, and condition at the time of receipt.<br>3. Shortage, damage, or mismatch must be reported immediately on the delivery copy.<br>4. Ownership and risk terms are as per applicable PO / agreement / internal approval.<br><br>Remarks: ${escapeHtml(dc.remarks)}</div><div class="sign"><div>Prepared By<br>${escapeHtml(dc.prepared_by)}</div><div>Authorized Signatory<br>${escapeHtml(dc.authorized_by)}</div><div>Received By</div></div></div></body></html>`;
+}
+
+function deliveryExportRows(){ return state.deliveryChallans.map(dc=>({ChallanNo:dc.challan_no,Date:dc.challan_date,BillTo:dc.bill_to_name,Purpose:dc.purpose,TotalQty:dc.total_qty,TotalAmount:dc.total_amount,PO_SO_Ref:dc.po_so_ref})); }
+const __v6_exportTableExcel = exportTableExcel;
+exportTableExcel = function(type){ if(type==='challans'){ const wb=XLSX.utils.book_new(); addSheet(wb,'Delivery Challans',deliveryExportRows()); XLSX.writeFile(wb,'stacknstock_delivery_challans.xlsx'); return; } return __v6_exportTableExcel(type); };
+const __v6_exportWorkbookExcel = exportWorkbookExcel;
+exportWorkbookExcel = function(){ __v6_exportWorkbookExcel(); };
+
+
+// ===== v6.5: product search dropdown, overflow fix, return logs =====
+state.deliveryProducts = state.deliveryProducts || [];
+state.deliveryChallans = state.deliveryChallans || [];
+state.deliveryLines = state.deliveryLines || [];
+state.dcDraftLines = state.dcDraftLines || [];
+state.returnLogs = state.returnLogs || [];
+state.returnLogLines = state.returnLogLines || [];
+state.returnDraftLines = state.returnDraftLines || [];
+
+function normalizeReturnLog(row){
+  return {
+    id: row.id || uid(),
+    return_no: row.return_no || makeReturnNo(),
+    return_date: row.return_date || new Date().toISOString().slice(0,10),
+    source_ticket_no: row.source_ticket_no || '',
+    returned_by: row.returned_by || '',
+    received_by: row.received_by || '',
+    notes: row.notes || '',
+    total_qty: Number(row.total_qty || 0),
+    created_by: row.created_by || null,
+    created_by_email: row.created_by_email || '',
+    created_at: row.created_at || new Date().toISOString(),
+    updated_at: row.updated_at || new Date().toISOString(),
+  };
+}
+function normalizeReturnLogLine(row){
+  return {
+    id: row.id || uid(),
+    return_id: row.return_id || '',
+    source_ticket_no: row.source_ticket_no || '',
+    item_id: row.item_id || '',
+    item_code: row.item_code || '',
+    description: row.description || '',
+    from_bin: row.from_bin || '',
+    uom: row.uom || '',
+    qty_issued: Number(row.qty_issued || 0),
+    qty_already_returned: Number(row.qty_already_returned || 0),
+    qty_returnable: Number(row.qty_returnable || 0),
+    qty_returned: Number(row.qty_returned || 0),
+    remarks: row.remarks || '',
+  };
+}
+function makeReturnNo(){ return `RET-${new Date().getFullYear()}-${String(Math.floor(Math.random()*9000)+1000)}`; }
+function returnLogLinesFor(returnId){ return state.returnLogLines.filter((x)=>x.return_id===returnId); }
+function returnExportRows(){ return state.returnLogs.map((r)=>({ ReturnNo:r.return_no, Date:r.return_date, SourceTicket:r.source_ticket_no, ReturnedBy:r.returned_by, ReceivedBy:r.received_by, TotalQty:r.total_qty, Notes:r.notes })); }
+function issueLogGroups(){
+  const map = new Map();
+  const issueMoves = state.movements.filter((m)=>String(m.movement_type || '').toUpperCase() !== 'PRODUCTION_RETURN');
+  for (const m of issueMoves) {
+    const no = ticketNoFromMovement(m);
+    if (!map.has(no)) map.set(no, { ticket_no: no, movements: [], ticket: state.tickets.find((t) => t.ticket_no === no) });
+    map.get(no).movements.push(m);
+  }
+  return [...map.values()].sort((a,b) => new Date(b.movements[0]?.created_at || 0) - new Date(a.movements[0]?.created_at || 0));
+}
+
+function dcProductLabel(p){
+  const base = p.description || p.item_code || 'Unknown product';
+  const bits = [];
+  if (p.item_code) bits.push(`Code: ${p.item_code}`);
+  if (p.supplier) bits.push(p.supplier);
+  if (p.part_no) bits.push(p.part_no);
+  return `${base}${bits.length ? ' | ' + bits.join(' | ') : ''}`;
+}
+function findDeliveryProduct(query){
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return null;
+  const exact = state.deliveryProducts.find((p)=>[
+    p.item_code,
+    p.description,
+    dcProductLabel(p)
+  ].filter(Boolean).some((v)=>String(v).trim().toLowerCase()===q));
+  if (exact) return exact;
+  const matches = state.deliveryProducts.filter((p)=>[p.item_code,p.description,p.supplier,p.part_no,dcProductLabel(p)].filter(Boolean).some((v)=>String(v).toLowerCase().includes(q)));
+  return matches.length===1 ? matches[0] : null;
+}
+window.searchDcProduct = function(id, query){
+  const line = state.dcDraftLines.find((x)=>x.id===id);
+  if (!line) return;
+  line.product_search = query;
+  const p = findDeliveryProduct(query);
+  if (p) {
+    Object.assign(line, { item_code:p.item_code, description:p.description, hsn_sac:p.hsn_sac, uom:p.uom || 'Nos', rate:Number(p.default_rate||0), gst_percent:Number(p.gst_percent||0), product_search: dcProductLabel(p) });
+  }
+  renderDcLines();
+};
+const __v65_addDcLine = addDcLine;
+addDcLine = function(){ state.dcDraftLines.push({ id:uid(), item_code:'', description:'', hsn_sac:'', uom:'Nos', qty:1, rate:0, gst_percent:0, box_serial_no:'', remarks:'', product_search:'' }); renderDcLines(); };
+renderDcLines = function(rebuild=true){
+  if (!$('dcLineRows')) return;
+  const datalist = `<datalist id="dcProductList">${state.deliveryProducts.map((p)=>`<option value="${escapeHtml(dcProductLabel(p))}">${escapeHtml(p.item_code || '')}</option>`).join('')}</datalist>`;
+  if (rebuild) $('dcLineRows').innerHTML = datalist + (state.dcDraftLines.map((l,idx) => {
+    const selected = state.deliveryProducts.find((p)=>p.item_code===l.item_code);
+    const searchValue = l.product_search || (selected ? dcProductLabel(selected) : '');
+    return `<div class="dc-line-card"><div class="dc-line-top"><div class="dc-item-pane"><div class="dc-line-no">Line ${idx+1}</div><input class="dc-product-search" list="dcProductList" placeholder="Search product by name / code / supplier / PO" value="${escapeHtml(searchValue)}" oninput="searchDcProduct('${l.id}',this.value)" onchange="searchDcProduct('${l.id}',this.value)" /><span class="dc-description">${escapeHtml(l.description||'Product description will appear here')}</span><small class="dc-picker-help">Hybrid search dropdown: type product name/code and select the matching suggestion from the list.</small></div></div><div class="dc-fields-grid"><label><span>HSN/SAC</span><input class="dc-field-input" value="${escapeHtml(l.hsn_sac)}" onchange="updateDcLine('${l.id}','hsn_sac',this.value)" /></label><label><span>UOM</span><input class="dc-field-input" value="${escapeHtml(l.uom)}" onchange="updateDcLine('${l.id}','uom',this.value)" required /></label><label><span>Qty</span><input class="dc-field-input" type="number" min="0.01" step="0.01" value="${l.qty}" onchange="updateDcLine('${l.id}','qty',this.value)" required /></label><label><span>Rate</span><input class="dc-field-input" type="number" min="0" step="0.01" value="${l.rate}" onchange="updateDcLine('${l.id}','rate',this.value)" /></label><label><span>GST %</span><input class="dc-field-input" type="number" min="0" step="0.01" value="${l.gst_percent}" onchange="updateDcLine('${l.id}','gst_percent',this.value)" /></label><label class="dc-serial-field"><span>Box / Serial</span><input class="dc-field-input" value="${escapeHtml(l.box_serial_no)}" placeholder="Box / Serial" onchange="updateDcLine('${l.id}','box_serial_no',this.value)" /></label><div class="dc-remove-field"><span>Remove</span><button type="button" class="mini-btn danger" onclick="removeDcLine('${l.id}')">Remove</button></div></div></div>`;
+  }).join('') || `<div class="dc-empty-state">No products added yet. Click <b>+ Add Product</b> to start.</div>`);
+  const totalQty = state.dcDraftLines.reduce((s,x)=>s+Number(x.qty||0),0);
+  const totalAmt = state.dcDraftLines.reduce((s,x)=>s+Number(x.qty||0)*Number(x.rate||0),0);
+  if ($('dcTotalQty')) $('dcTotalQty').textContent = moneyish(totalQty);
+  if ($('dcTotalAmount')) $('dcTotalAmount').textContent = moneyish(totalAmt);
+};
+
+function aggregateIssueSource(ticketNo){
+  const group = issueLogGroups().find((g)=>g.ticket_no===ticketNo);
+  if (!group) return [];
+  const map = new Map();
+  for (const m of group.movements) {
+    const key = `${m.item_id || ''}__${m.item_code}__${m.bin || ''}`;
+    if (!map.has(key)) map.set(key, { item_id:m.item_id || '', item_code:m.item_code || '', description:m.description || '', from_bin:m.bin || '', uom:(state.inventory.find((x)=>x.id===m.item_id || x.item_code===m.item_code)?.uom) || '', qty_issued:0 });
+    map.get(key).qty_issued += Number(m.qty_taken || 0);
+  }
+  return [...map.values()];
+}
+function alreadyReturnedQty(ticketNo, itemCode, fromBin){
+  return state.returnLogLines
+    .filter((x)=>x.source_ticket_no===ticketNo && x.item_code===itemCode && (x.from_bin||'')===(fromBin||''))
+    .reduce((sum,x)=>sum + Number(x.qty_returned || 0), 0);
+}
+function returnSourceOptions(selected=''){
+  const groups = issueLogGroups();
+  return `<option value="">Select source issue ticket</option>` + groups.map((g)=>`<option value="${escapeHtml(g.ticket_no)}" ${g.ticket_no===selected?'selected':''}>${escapeHtml(g.ticket_no)} - ${escapeHtml(g.ticket?.work_order || g.movements[0]?.issued_to || '')}</option>`).join('');
+}
+function buildReturnDraftLines(ticketNo){
+  state.returnDraftLines = aggregateIssueSource(ticketNo).map((row)=>{
+    const returned = alreadyReturnedQty(ticketNo, row.item_code, row.from_bin);
+    const returnable = Math.max(0, Number(row.qty_issued || 0) - Number(returned || 0));
+    return normalizeReturnLogLine({ id: uid(), source_ticket_no: ticketNo, item_id: row.item_id, item_code: row.item_code, description: row.description, from_bin: row.from_bin, uom: row.uom || 'Nos', qty_issued: row.qty_issued, qty_already_returned: returned, qty_returnable: returnable, qty_returned: returnable > 0 ? returnable : 0 });
+  }).filter((x)=>Number(x.qty_returnable || 0) > 0);
+}
+function setReturnMsg(msg, success=false){ if ($('returnMessage')) { $('returnMessage').textContent = msg || ''; $('returnMessage').classList.toggle('success', !!success); } }
+window.onReturnSourceChange = function(ticketNo){ buildReturnDraftLines(ticketNo); renderReturnDraftLines(); };
+window.updateReturnDraftLine = function(id, value){ const line = state.returnDraftLines.find((x)=>x.id===id); if (!line) return; const num = Math.max(0, Math.min(Number(line.qty_returnable || 0), Number(value || 0))); line.qty_returned = num; renderReturnDraftLines(); };
+function renderReturnDraftLines(){
+  if (!$('returnLineRows')) return;
+  const rows = state.returnDraftLines.map((l)=>`<div class="return-line-card"><div class="return-line-main"><div class="meta"><strong>${escapeHtml(l.item_code)}${l.uom ? ` • ${escapeHtml(l.uom)}` : ''}</strong><span>${escapeHtml(l.description || '-')}</span></div><div class="return-line-bin"><b>Bin</b><span>${escapeHtml(l.from_bin || '-')}</span></div><div class="return-inline-help">Select how many units are being returned back into inventory for this line.</div></div><div class="return-stat-grid"><div class="return-stat"><small>Issued</small><div class="pill">${moneyish(l.qty_issued)}</div></div><div class="return-stat"><small>Already Returned</small><div class="pill">${moneyish(l.qty_already_returned)}</div></div><div class="return-stat"><small>Returnable</small><div class="pill">${moneyish(l.qty_returnable)}</div></div><label class="return-input-block"><span>Qty Returning</span><input type="number" min="0" max="${l.qty_returnable}" step="0.01" value="${l.qty_returned}" onchange="updateReturnDraftLine('${l.id}', this.value)" /></label></div></div>`).join('');
+  $('returnLineRows').innerHTML = rows || `<div class="return-empty-state">No returnable lines found for the selected issue ticket. Choose a source issue ticket that still has balance available for return.</div>`;
+}
+function openReturnModal(sourceTicket=''){
+  $('returnForm')?.reset();
+  if ($('returnNo')) $('returnNo').value = makeReturnNo();
+  if ($('returnDate')) $('returnDate').value = new Date().toISOString().slice(0,10);
+  const groups = issueLogGroups();
+  const chosenTicket = sourceTicket || groups[0]?.ticket_no || '';
+  if ($('returnSourceTicket')) $('returnSourceTicket').innerHTML = returnSourceOptions(chosenTicket);
+  if ($('returnedBy')) $('returnedBy').value = '';
+  if ($('receivedBy')) $('receivedBy').value = state.user?.email || '';
+  state.returnDraftLines = [];
+  if (chosenTicket) buildReturnDraftLines(chosenTicket);
+  renderReturnDraftLines();
+  setReturnMsg(groups.length ? '' : 'No issue tickets are currently available for return. Create / issue a ticket first.', false);
+  $('returnModal')?.showModal();
+}
+window.openReturnModal = openReturnModal;
+window.openReturnLogBySource = openReturnModal;
+async function saveReturnLog(e){
+  e.preventDefault();
+  const sourceTicket = $('returnSourceTicket')?.value || '';
+  if (!sourceTicket) return setReturnMsg('Select the source issue ticket.', false);
+  const valid = state.returnDraftLines.filter((x)=>Number(x.qty_returned || 0) > 0);
+  if (!valid.length) return setReturnMsg('Enter at least one return quantity greater than 0.', false);
+  for (const l of valid) { if (Number(l.qty_returned || 0) > Number(l.qty_returnable || 0)) return setReturnMsg(`Return qty exceeds available balance for ${l.item_code}.`, false); }
+  const totalQty = valid.reduce((sum,x)=>sum + Number(x.qty_returned || 0), 0);
+  const ret = normalizeReturnLog({ id: uid(), return_no: $('returnNo').value.trim(), return_date: $('returnDate').value, source_ticket_no: sourceTicket, returned_by: $('returnedBy').value.trim(), received_by: $('receivedBy').value.trim(), notes: $('returnNotes').value.trim(), total_qty: totalQty, created_by: state.user?.id || null, created_by_email: state.user?.email || '', created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+  const lines = valid.map((l)=>normalizeReturnLogLine({ ...l, id: uid(), return_id: ret.id, qty_returned: Number(l.qty_returned || 0) }));
+  const movements = [];
+  for (const line of lines) {
+    const item = state.inventory.find((x)=>x.id===line.item_id || x.item_code===line.item_code);
+    if (!item) return setReturnMsg(`Inventory item not found for ${line.item_code}.`, false);
+    const before = Number(item.qty || 0);
+    const after = before + Number(line.qty_returned || 0);
+    item.qty = after;
+    item.updated_at = new Date().toISOString();
+    movements.push(normalizeMovement({ id: uid(), item_id: item.id, item_code: item.item_code, description: item.description, bin: item.bin || line.from_bin, qty_taken: Number(line.qty_returned || 0), qty_before: before, qty_after: after, issued_to: ret.returned_by || 'Return', work_order: ret.source_ticket_no, notes: `Return ${ret.return_no} from ${ret.source_ticket_no}`, movement_type: 'PRODUCTION_RETURN', created_at: ret.created_at }));
+  }
+  state.returnLogs.unshift(ret);
+  state.returnLogLines.push(...lines);
+  state.movements.unshift(...movements);
+  persistLocal();
+  if (state.dbReady) {
+    const [r1, r2, r3] = await Promise.all([
+      state.supabase.from('return_logs').insert(ret),
+      state.supabase.from('return_log_lines').insert(lines),
+      state.supabase.from('stock_movements').insert(movements),
+    ]);
+    if (r1.error) return setReturnMsg(`Return log save failed: ${r1.error.message}`, false);
+    if (r2.error) return setReturnMsg(`Return lines save failed: ${r2.error.message}`, false);
+    if (r3.error) return setReturnMsg(`Stock movement save failed: ${r3.error.message}`, false);
+    for (const line of lines) {
+      const item = state.inventory.find((x)=>x.id===line.item_id || x.item_code===line.item_code);
+      await state.supabase.from('inventory_items').upsert(item);
+    }
+  }
+  setReturnMsg(`Return log ${ret.return_no} saved. Quantity returned: ${moneyish(totalQty)}.`, true);
+  renderAll();
+  $('returnModal')?.close();
+}
+function returnLogHtml(ret, lines){
+  const rows = lines.map((l,i)=>`<tr><td>${i+1}</td><td>${escapeHtml(l.item_code)}</td><td>${escapeHtml(l.description)}</td><td>${escapeHtml(l.from_bin || '')}</td><td>${moneyish(l.qty_issued)}</td><td>${moneyish(l.qty_returned)}</td></tr>`).join('');
+  return `<!doctype html><html><head><title>${escapeHtml(ret.return_no)}</title><style>body{font-family:Arial,sans-serif;color:#111;margin:24px}.sheet{max-width:980px;margin:auto;border:2px solid #111;padding:18px}.title{text-align:center;font-size:22px;font-weight:800}.grid{display:grid;grid-template-columns:180px 1fr 180px 1fr;border-left:1px solid #111;border-top:1px solid #111;margin-top:12px}.grid div{border-right:1px solid #111;border-bottom:1px solid #111;padding:8px;font-size:12px}.label{font-weight:700;background:#eee}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{border:1px solid #111;padding:6px;font-size:12px}th{background:#eee}.sign{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:30px}.sign div{border-top:1px solid #111;padding-top:8px;text-align:center}.printbar{text-align:right;margin-bottom:10px}@media print{.printbar{display:none}}</style></head><body><div class="printbar"><button onclick="window.print()">Print Return Log</button></div><div class="sheet"><div class="title">MATERIAL RETURN LOG</div><div class="grid"><div class="label">Return No</div><div>${escapeHtml(ret.return_no)}</div><div class="label">Return Date</div><div>${escapeHtml(ret.return_date)}</div><div class="label">Source Ticket</div><div>${escapeHtml(ret.source_ticket_no)}</div><div class="label">Returned By</div><div>${escapeHtml(ret.returned_by)}</div><div class="label">Received By</div><div>${escapeHtml(ret.received_by)}</div><div class="label">Total Qty</div><div>${moneyish(ret.total_qty)}</div><div class="label">Notes</div><div>${escapeHtml(ret.notes || '-')}</div><div class="label">Generated By</div><div>${escapeHtml(ret.created_by_email || '-')}</div></div><table><thead><tr><th>S.No</th><th>Item Code</th><th>Description</th><th>Bin</th><th>Issued Qty</th><th>Returned Qty</th></tr></thead><tbody>${rows}</tbody></table><div class="sign"><div>Returned By</div><div>Inventory Received By</div></div></div></body></html>`;
+}
+window.viewReturnLog = function(id){
+  const ret = state.returnLogs.find((x)=>x.id===id); if (!ret) return;
+  const lines = returnLogLinesFor(id);
+  $('returnDetailTitle').textContent = `Return Log - ${ret.return_no}`;
+  $('returnDetailMeta').innerHTML = `<div><span>Return No</span><strong>${escapeHtml(ret.return_no)}</strong></div><div><span>Date</span><strong>${escapeHtml(ret.return_date)}</strong></div><div><span>Source Ticket</span><strong>${escapeHtml(ret.source_ticket_no)}</strong></div><div><span>Returned By</span><strong>${escapeHtml(ret.returned_by)}</strong></div><div><span>Received By</span><strong>${escapeHtml(ret.received_by)}</strong></div><div><span>Total Qty</span><strong>${moneyish(ret.total_qty)}</strong></div>`;
+  $('returnDetailRows').innerHTML = lines.map((l,i)=>`<tr><td>${i+1}</td><td><strong>${escapeHtml(l.item_code)}</strong></td><td>${escapeHtml(l.description)}</td><td>${escapeHtml(l.from_bin || '')}</td><td>${moneyish(l.qty_issued)}</td><td>${moneyish(l.qty_returned)}</td></tr>`).join('') || emptyRow(6);
+  $('returnPrintBtn').onclick = ()=>printReturnLog(id);
+  $('returnDetailModal')?.showModal();
+};
+window.printReturnLog = function(id){ const ret = state.returnLogs.find((x)=>x.id===id); if (!ret) return; const lines = returnLogLinesFor(id); const w = window.open('', '_blank', 'width=980,height=760'); w.document.write(returnLogHtml(ret, lines)); w.document.close(); w.focus(); setTimeout(()=>w.print(), 300); };
+function renderReturns(){
+  if (!$('returnRows')) return;
+  $('returnCount').textContent = `${state.returnLogs.length} logs`;
+  $('returnRows').innerHTML = state.returnLogs.map((r)=>{ const lines = returnLogLinesFor(r.id); return `<tr><td><strong>${escapeHtml(r.return_no)}</strong></td><td>${escapeHtml(r.return_date)}</td><td>${escapeHtml(r.source_ticket_no)}</td><td>${escapeHtml(r.returned_by)}</td><td>${lines.length}</td><td>${moneyish(r.total_qty)}</td><td><div class="return-action-row"><button class="ghost-btn compact" onclick="viewReturnLog('${r.id}')">View</button><button class="mini-btn" onclick="printReturnLog('${r.id}')">Print</button></div></td></tr>`; }).join('') || emptyRow(7);
+}
+
+const __v65_loadData = loadData;
+loadData = async function(){
+  await __v65_loadData();
+  if (state.dbReady && state.user) {
+    const [logsRes, linesRes] = await Promise.all([
+      state.supabase.from('return_logs').select('*').order('created_at', { ascending: false }),
+      state.supabase.from('return_log_lines').select('*')
+    ]);
+    if (logsRes.error) console.warn('Return logs skipped. Run v6.5 migration.', logsRes.error);
+    if (linesRes.error) console.warn('Return log lines skipped. Run v6.5 migration.', linesRes.error);
+    state.returnLogs = (logsRes.data || []).map(normalizeReturnLog);
+    state.returnLogLines = (linesRes.data || []).map(normalizeReturnLogLine);
+  } else {
+    const cached = JSON.parse(localStorage.getItem('sns_inventory_dashboard') || '{}');
+    state.returnLogs = (cached.returnLogs || []).map(normalizeReturnLog);
+    state.returnLogLines = (cached.returnLogLines || []).map(normalizeReturnLogLine);
+  }
+};
+persistLocal = function(){
+  localStorage.setItem('sns_inventory_dashboard', JSON.stringify({
+    inventory: state.inventory,
+    quarantine: state.quarantine,
+    binLocations: state.binLocations,
+    movements: state.movements,
+    tickets: state.tickets,
+    ticketLines: state.ticketLines,
+    returnLogs: state.returnLogs,
+    returnLogLines: state.returnLogLines,
+  }));
+};
+const __v65_renderAll = renderAll;
+renderAll = function(){
+  __v65_renderAll();
+  renderReturns();
+  if (state.team === 'inventory' && $('pageTitle')) {
+    const t = { returns: 'Return Logs', delivery: 'Delivery Challan', movements: 'Issue Logs' };
+    if (t[state.view]) $('pageTitle').textContent = t[state.view];
+  }
+};
+renderMovements = function() {
+  if (!$('movementRows')) return;
+  const groups = issueLogGroups();
+  $('movementCount').textContent = `${groups.length} logs`;
+  $('movementRows').innerHTML = groups.map((g) => {
+    const first = g.movements[0] || {};
+    const total = g.movements.reduce((sum, x) => sum + Number(x.qty_taken || 0), 0);
+    const status = g.ticket?.status || 'ISSUED';
+    return `<tr class="log-row" onclick="openIssueLog('${escapeHtml(g.ticket_no)}')"><td><strong>${escapeHtml(g.ticket_no)}</strong></td><td>${first.created_at ? new Date(first.created_at).toLocaleString() : ''}</td><td>${escapeHtml(g.ticket?.work_order || first.work_order || '')}</td><td>${escapeHtml(g.ticket?.department || first.issued_to || '')}</td><td>${g.movements.length}</td><td>${moneyish(total)}</td><td>${statusChip(status)}</td><td><div class="return-action-row"><button class="ghost-btn compact" onclick="event.stopPropagation(); openIssueLog('${escapeHtml(g.ticket_no)}')">View / Print</button><button class="mini-btn" onclick="event.stopPropagation(); openReturnLogBySource('${escapeHtml(g.ticket_no)}')">Create Return</button></div></td></tr>`;
+  }).join('') || emptyRow(8);
+};
+const __v65_bindEvents = bindEvents;
+bindEvents = function(){
+  __v65_bindEvents();
+  $('openReturnModalBtn')?.addEventListener('click', ()=>openReturnModal());
+  $('returnSourceTicket')?.addEventListener('change', (e)=>onReturnSourceChange(e.target.value));
+  $('returnForm')?.addEventListener('submit', saveReturnLog);
+};
+const __v65_exportTableExcel = exportTableExcel;
+exportTableExcel = function(type){
+  if (type === 'returns') {
+    const wb = XLSX.utils.book_new();
+    addSheet(wb, 'Return Logs', returnExportRows());
+    XLSX.writeFile(wb, 'stacknstock_return_logs.xlsx');
+    return;
+  }
+  return __v65_exportTableExcel(type);
+};
+
+
+// v6.5.1: robust return modal opening even if earlier event binding was missed
+window.forceOpenReturnModal = function(){
+  try {
+    if (typeof openReturnModal === 'function') openReturnModal();
+    else document.getElementById('returnModal')?.showModal();
+  } catch (err) {
+    console.error('Return modal open failed', err);
+    alert(`Return modal open failed: ${err.message}`);
+  }
+};
+document.addEventListener('click', function(e){
+  const btn = e.target.closest && e.target.closest('#openReturnModalBtn');
+  if (btn) {
+    e.preventDefault();
+    window.forceOpenReturnModal();
+  }
+});
+document.addEventListener('click', function(e){
+  const closeBtn = e.target.closest && e.target.closest('[data-close]');
+  if (closeBtn) {
+    const dlg = document.getElementById(closeBtn.dataset.close);
+    if (dlg && typeof dlg.close === 'function') dlg.close();
+  }
+});
 
 init();
