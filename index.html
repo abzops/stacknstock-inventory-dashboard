@@ -105,7 +105,6 @@
         <button class="nav-btn" data-view="tickets">Ticket Notifications</button>
         <button class="nav-btn" data-view="movements">Issue Logs</button>
         <button class="nav-btn" data-view="returns">Return Logs</button>
-        <button class="nav-btn" data-view="delivery">Delivery Challan</button>
         <button class="nav-btn" data-view="settings">Supabase Setup</button>
       </nav>
 
@@ -289,64 +288,6 @@
         </div>
       </section>
 
-
-      <section id="deliveryView" class="view">
-        <div class="panel">
-          <div class="panel-head">
-            <h3>Create Delivery Challan</h3>
-            <div class="panel-actions">
-              <button class="ghost-btn compact" id="newChallanBtn">New Challan</button>
-              <button class="ghost-btn compact" data-export-table="challans">Export Table</button>
-              <span id="challanCount">0 challans</span>
-            </div>
-          </div>
-          <div class="dc-hero-card">
-            <div>
-              <span class="label">Delivery challan desk</span>
-              <p>Create delivery challans in the attached template format. Product names and prices are fetched from Procurement Hub po_lines.</p>
-            </div>
-            <div class="dc-stat-strip">
-              <article><span>Draft lines</span><strong id="dcTotalQty">0</strong><small>Total Qty</small></article>
-              <article><span>Draft value</span><strong id="dcTotalAmount">0</strong><small>Total Amount</small></article>
-            </div>
-          </div>
-          <div class="challan-layout stacked-layout">
-            <div class="challan-products dc-card full-span-card">
-              <div class="dc-section-head dc-product-head"><div><h3>Product Selection</h3><span>Products from Procurement Hub po_lines: item_desc = name, line_grand_total = price</span></div><button class="ghost-btn compact" id="addDcLineBtn">+ Add Product</button></div>
-              <div class="dc-line-list-wrap">
-                <div class="dc-line-list-head">
-                  <span>Item</span><span>HSN/SAC</span><span>UOM</span><span>Qty</span><span>Rate</span><span>GST %</span><span>Box / Serial</span><span>Remove</span>
-                </div>
-                <div id="dcLineRows" class="dc-line-list"></div>
-              </div>
-            </div>
-            <form id="challanForm" class="challan-form dc-card full-span-card">
-              <div class="dc-section-head"><h3>Challan Details</h3><span>Header information</span></div>
-              <div class="dc-form-grid"><label>Challan No <em>*</em><input id="dcNo" required /></label><label>Challan Date <em>*</em><input id="dcDate" type="date" required /></label></div>
-              <div class="dc-form-grid"><label>PO / SO Ref<input id="dcPoRef" /></label><label>E-Way Bill No<input id="dcEway" /></label></div>
-              <div class="dc-form-grid"><label>Mode of Transport<input id="dcTransport" value="Road / Courier" /></label><label>Place of Supply <em>*</em><input id="dcPlace" required /></label></div>
-
-              <div class="dc-section-head"><h3>Consignee</h3><span>Billing and shipping</span></div>
-              <div class="dc-form-grid"><label>Bill To / Consignee Name <em>*</em><input id="dcBillName" required /></label><label>Bill To GSTIN<input id="dcBillGstin" /></label></div>
-              <label>Bill To Address <em>*</em><textarea id="dcBillAddress" rows="2" required></textarea></label>
-              <div class="dc-form-grid"><label>Bill To Contact<input id="dcBillContact" /></label><label>Ship To Contact<input id="dcShipContact" /></label></div>
-              <label>Ship To / Delivery Address <em>*</em><textarea id="dcShipAddress" rows="2" required></textarea></label>
-
-              <div class="dc-section-head"><h3>Authorization</h3><span>Purpose and approval</span></div>
-              <div class="dc-form-grid"><label>Purpose <em>*</em><select id="dcPurpose" required><option>Delivery</option><option>Sample</option><option>Return</option><option>Job Work</option><option>Repair</option><option>Demo</option><option>Internal Transfer</option></select></label><label>Expected Return Date<input id="dcReturnDate" placeholder="N/A" /></label></div>
-              <div class="dc-form-grid"><label>Prepared By <em>*</em><input id="dcPreparedBy" required /></label><label>Authorized By<input id="dcAuthorizedBy" /></label></div>
-              <label>Remarks / Declaration Notes<input id="dcRemarks" /></label>
-              <div class="dc-submit-row"><button class="primary-btn full" type="submit">Save Delivery Challan</button></div>
-              <div id="challanMessage" class="ticket-message muted"></div>
-            </form>
-          </div>
-        </div>
-        <div class="panel">
-          <div class="panel-head"><h3>Delivery Challan Register</h3><span id="dcRegisterCount">0 records</span></div>
-          <div class="table-wrap tall"><table><thead><tr><th>Challan No</th><th>Date</th><th>Bill To</th><th>Purpose</th><th>Items</th><th>Amount</th><th>Action</th></tr></thead><tbody id="deliveryRows"></tbody></table></div>
-        </div>
-      </section>
-
       <section id="settingsView" class="view">
         <div class="panel setup-panel">
           <h3>Supabase Setup + Authentication</h3>
@@ -429,7 +370,7 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
 
   <dialog id="returnModal">
     <form class="modal-card wide-modal return-modal-card" id="returnForm">
-      <div class="modal-head"><h3>Create Return Log</h3><button type="button" class="icon-btn" data-close="returnModal">x</button></div>
+      <div class="modal-head"><h3>Create Return Log</h3><button type="button" class="icon-btn" data-close="returnModal">×</button></div>
       <div class="dc-form-grid">
         <label>Return No <em>*</em><input id="returnNo" required /></label>
         <label>Return Date <em>*</em><input id="returnDate" type="date" required /></label>
@@ -447,13 +388,13 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
         <div id="returnLineRows" class="return-line-list"></div>
       </div>
       <div id="returnMessage" class="ticket-message muted"></div>
-      <button class="primary-btn full" type="submit">Save Return Log</button>
+      <button class="primary-btn full" type="submit" id="saveReturnLogBtn">Save Return Log</button>
     </form>
   </dialog>
 
   <dialog id="returnDetailModal">
     <div class="modal-card wide-modal return-modal-card">
-      <div class="modal-head"><h3 id="returnDetailTitle">Return Log Details</h3><button type="button" class="icon-btn" data-close="returnDetailModal">x</button></div>
+      <div class="modal-head"><h3 id="returnDetailTitle">Return Log Details</h3><button type="button" class="icon-btn" data-close="returnDetailModal">×</button></div>
       <div id="returnDetailMeta" class="log-meta-grid"></div>
       <div class="table-wrap"><table><thead><tr><th>S.No</th><th>Item Code</th><th>Description</th><th>Bin</th><th>Issued Qty</th><th>Returned Qty</th></tr></thead><tbody id="returnDetailRows"></tbody></table></div>
       <button class="primary-btn full" type="button" id="returnPrintBtn">Print Return Log</button>
