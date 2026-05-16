@@ -14,6 +14,7 @@ Object.assign(state, {
   scrapLogs: [],
   reorderSettingsDb: [],
   itemCostLayers: [],
+  v7PendingDbWrites: [],
   actionQueue: [],
   dcDraftLines: [],
   jobWorkDraftLines: [],
@@ -373,17 +374,51 @@ function ensureInventoryItem({ item_code, description = "", uom = "", supplier =
 async function insertRows(table, rows) {
   const list = Array.isArray(rows) ? rows : [rows];
   if (!state.dbReady || !state.user || !list.length) return;
-  const request = state.supabase.from(table).insert(list);
-  const { error } = typeof withDbTimeout === "function" ? await withDbTimeout(request, `${table} save`) : await request;
-  if (error) throw new Error(`${table} save failed: ${error.message}`);
+  queueV7DbSync({ method: "insert", table, rows: list, label: `${table} save` });
 }
 
 async function upsertRows(table, rows) {
   const list = Array.isArray(rows) ? rows : [rows];
   if (!state.dbReady || !state.user || !list.length) return;
-  const request = state.supabase.from(table).upsert(list);
-  const { error } = typeof withDbTimeout === "function" ? await withDbTimeout(request, `${table} save`) : await request;
-  if (error) throw new Error(`${table} save failed: ${error.message}`);
+  queueV7DbSync({ method: "upsert", table, rows: list, label: `${table} save` });
+}
+
+function queueV7DbSync(write, fromRetry = false) {
+  const safeWrite = {
+    id: write.id || uid(),
+    method: write.method,
+    table: write.table,
+    rows: JSON.parse(JSON.stringify(write.rows || [])),
+    label: write.label || `${write.table} sync`,
+    created_at: write.created_at || new Date().toISOString(),
+  };
+  const request = state.supabase.from(safeWrite.table)[safeWrite.method](safeWrite.rows);
+  const sync = typeof withDbTimeout === "function" ? withDbTimeout(request, safeWrite.label) : request;
+  Promise.resolve(sync)
+    .then((res) => {
+      if (res?.error) throw new Error(res.error.message || String(res.error));
+      if (fromRetry) {
+        state.v7PendingDbWrites = (state.v7PendingDbWrites || []).filter((x) => x.id !== safeWrite.id);
+        persistLocal();
+      }
+    })
+    .catch((err) => {
+      console.warn(`${safeWrite.label} sync failed`, err);
+      if (!fromRetry && !(state.v7PendingDbWrites || []).some((x) => x.id === safeWrite.id)) {
+        state.v7PendingDbWrites = [...(state.v7PendingDbWrites || []), safeWrite];
+        persistLocal();
+      }
+      const now = Date.now();
+      if (!state.lastV7DbSyncWarningAt || now - state.lastV7DbSyncWarningAt > 6000) {
+        state.lastV7DbSyncWarningAt = now;
+        if (typeof showWorkflowMessage === "function") showWorkflowMessage("Saved locally. Database sync is queued and will retry automatically.", true);
+      }
+    });
+}
+
+function flushV7DbSyncQueue() {
+  if (!state.dbReady || !state.user || !(state.v7PendingDbWrites || []).length) return;
+  for (const write of [...state.v7PendingDbWrites]) queueV7DbSync(write, true);
 }
 
 async function postLedgerEntry(entry) {
@@ -424,9 +459,7 @@ async function postLedgerEntry(entry) {
   persistLocal();
   await insertRows("stock_ledger", row);
   if (state.dbReady && state.user) {
-    const request = state.supabase.from("inventory_items").upsert(item);
-    const { error } = typeof withDbTimeout === "function" ? await withDbTimeout(request, "Inventory balance update") : await request;
-    if (error) throw new Error(`Inventory balance update failed: ${error.message}`);
+    queueV7DbSync({ method: "upsert", table: "inventory_items", rows: [item], label: "Inventory balance update" });
   }
   return row;
 }
@@ -459,6 +492,7 @@ loadData = async function() {
     state.scrapLogs = (cached.scrapLogs || []).map(normalizeScrap);
     state.reorderSettingsDb = (cached.reorderSettingsDb || []).map(normalizeReorderDb);
     state.itemCostLayers = (cached.itemCostLayers || []).map(normalizeCostLayer);
+    state.v7PendingDbWrites = cached.v7PendingDbWrites || [];
   };
   if (!state.dbReady || !state.user) {
     loadCached();
@@ -496,6 +530,7 @@ loadData = async function() {
     loadCached();
   }
   recalculateInventoryBalances();
+  flushV7DbSyncQueue();
 };
 
 persistLocal = function() {
@@ -522,6 +557,7 @@ persistLocal = function() {
     scrapLogs: state.scrapLogs,
     reorderSettingsDb: state.reorderSettingsDb,
     itemCostLayers: state.itemCostLayers,
+    v7PendingDbWrites: state.v7PendingDbWrites || [],
   }));
 };
 
