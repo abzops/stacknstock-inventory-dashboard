@@ -1,5 +1,12 @@
 {
   "devDependencies": {
-    "supabase": "^2.98.2"
+    "supabase": "^2.98.2",
+    "vite": "^8.0.13"
+  },
+  "scripts": {
+    "dev": "vite",
+    "start": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
   }
 }

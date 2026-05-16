@@ -1778,4 +1778,5 @@ document.addEventListener('click', function(e){
   }
 });
 
-init();
+// ===== v7: ledger-first inventory control, GRN, MIV, job work, WIP, scrap, costing =====
+// Init is called from v7-module.js after the V7 overrides are registered.
