@@ -19,6 +19,104 @@ const $ = (id) => document.getElementById(id);
 const cleanStatus = (s) => (s || "OK").toString().trim().toUpperCase();
 const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
 const moneyish = (n) => Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
+const errMsg = (err) => err?.message || String(err || "Something went wrong.");
+
+function showWorkflowMessage(message, ok = true) {
+  if (!message) return;
+  let region = $("workflowToastRegion");
+  if (!region) {
+    region = document.createElement("div");
+    region.id = "workflowToastRegion";
+    region.className = "workflow-toast-region";
+    region.setAttribute("aria-live", "polite");
+    region.setAttribute("aria-atomic", "true");
+    document.body.appendChild(region);
+  }
+  const toast = document.createElement("div");
+  toast.className = `workflow-toast ${ok ? "success" : "error"}`;
+  toast.textContent = message;
+  region.appendChild(toast);
+  setTimeout(() => toast.remove(), ok ? 4200 : 7000);
+}
+
+function setFormMessage(id, message, ok = true) {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = message || "";
+  el.classList.toggle("hidden", !message);
+  el.classList.toggle("success", !!ok);
+  el.classList.toggle("error", !ok);
+}
+
+function closeDialogAfterSuccess(dialogId, delay = 450) {
+  setTimeout(() => {
+    const dlg = $(dialogId);
+    if (dlg?.open) dlg.close();
+  }, delay);
+}
+
+function setSubmitBusy(form, busy, label = "Saving...") {
+  const btn = form?.querySelector('button[type="submit"]');
+  if (!btn) return;
+  if (busy) {
+    btn.dataset.originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = label;
+  } else {
+    btn.disabled = false;
+    if (btn.dataset.originalText) btn.textContent = btn.dataset.originalText;
+    delete btn.dataset.originalText;
+  }
+}
+
+function formMessageTarget(form) {
+  return {
+    itemForm: "itemMessage",
+    ncrForm: "ncrMessage",
+    binForm: "binMessage",
+    issueForm: "issueMessage",
+    ticketRequestForm: "ticketRequestMessage",
+    returnForm: "returnMessage",
+    grnForm: "grnMessage",
+    mivForm: "mivMessage",
+    dcForm: "dcMessage",
+    jobWorkForm: "jobWorkMessage",
+    wipForm: "wipMessage",
+    scrapForm: "scrapMessage",
+    authForm: "authMessage",
+  }[form?.id];
+}
+
+function fieldLabel(input) {
+  const label = input.closest("label");
+  if (!label) return input.id || input.name || "This field";
+  return [...label.childNodes]
+    .filter((node) => node.nodeType === Node.TEXT_NODE)
+    .map((node) => node.textContent.trim())
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s*\*\s*$/, "") || input.id || "This field";
+}
+
+function showValidationMessage(input) {
+  const form = input.form;
+  if (!form || form.dataset.validationNotified === "1") return;
+  form.dataset.validationNotified = "1";
+  setTimeout(() => { delete form.dataset.validationNotified; }, 250);
+  const msg = `${fieldLabel(input)}: ${input.validationMessage || "Check this value."}`;
+  const target = formMessageTarget(form);
+  if (target === "ticketRequestMessage" && typeof setTicketMsg === "function") setTicketMsg(msg, false);
+  else if (target === "returnMessage" && typeof setReturnMsg === "function") setReturnMsg(msg, false);
+  else if (["grnMessage", "mivMessage", "dcMessage", "jobWorkMessage", "wipMessage", "scrapMessage"].includes(target) && typeof setV7Msg === "function") setV7Msg(target, msg, false);
+  else if (target === "authMessage" && typeof setAuthMessage === "function") { setAuthMessage(msg); showWorkflowMessage(msg, false); }
+  else { setFormMessage(target, msg, false); showWorkflowMessage(msg, false); }
+}
+
+function installFormValidationMessages() {
+  if (document.body.dataset.workflowValidationInstalled) return;
+  document.body.dataset.workflowValidationInstalled = "1";
+  document.addEventListener("invalid", (event) => showValidationMessage(event.target), true);
+}
 
 function normalizeItem(row) {
   return {
@@ -259,15 +357,16 @@ function persistLocal() {
 
 async function saveItem(item) {
   item.updated_at = new Date().toISOString();
+  if (state.dbReady) {
+    const { error } = await state.supabase.from("inventory_items").upsert(item);
+    if (error) throw new Error(`Item save failed: ${error.message}`);
+  }
   const i = state.inventory.findIndex((x) => x.id === item.id);
   if (i >= 0) state.inventory[i] = item;
   else state.inventory.unshift(item);
   persistLocal();
-  if (state.dbReady) {
-    const { error } = await state.supabase.from("inventory_items").upsert(item);
-    if (error) alert(`Save failed: ${error.message}`);
-  }
   renderAll();
+  return item;
 }
 
 async function deleteItem(id) {
@@ -282,15 +381,16 @@ async function deleteItem(id) {
 
 async function saveNcr(row) {
   row.updated_at = new Date().toISOString();
+  if (state.dbReady) {
+    const { error } = await state.supabase.from("quarantine_items").upsert(row);
+    if (error) throw new Error(`NCR save failed: ${error.message}`);
+  }
   const i = state.quarantine.findIndex((x) => x.id === row.id);
   if (i >= 0) state.quarantine[i] = row;
   else state.quarantine.unshift(row);
   persistLocal();
-  if (state.dbReady) {
-    const { error } = await state.supabase.from("quarantine_items").upsert(row);
-    if (error) alert(`NCR save failed: ${error.message}`);
-  }
   renderAll();
+  return row;
 }
 
 async function deleteNcr(id) {
@@ -305,15 +405,16 @@ async function deleteNcr(id) {
 
 async function saveBin(row) {
   row.updated_at = new Date().toISOString();
+  if (state.dbReady) {
+    const { error } = await state.supabase.from("bin_locations").upsert(row);
+    if (error) throw new Error(`Bin save failed: ${error.message}`);
+  }
   const i = state.binLocations.findIndex((x) => x.id === row.id);
   if (i >= 0) state.binLocations[i] = row;
   else state.binLocations.unshift(row);
   persistLocal();
-  if (state.dbReady) {
-    const { error } = await state.supabase.from("bin_locations").upsert(row);
-    if (error) alert(`Bin save failed: ${error.message}`);
-  }
   renderAll();
+  return row;
 }
 
 async function deleteBin(id) {
@@ -329,8 +430,8 @@ async function deleteBin(id) {
 async function issueToProduction(item, qtyTaken, issuedTo, workOrder, notes) {
   const before = Number(item.qty || 0);
   const taken = Math.max(0, Number(qtyTaken || 0));
-  if (!taken) return alert("Enter a quantity greater than 0.");
-  if (taken > before) return alert("Issue quantity cannot be greater than available quantity.");
+  if (!taken) throw new Error("Enter a quantity greater than 0.");
+  if (taken > before) throw new Error("Issue quantity cannot be greater than available quantity.");
   const after = Math.max(0, before - taken);
   const updated = normalizeItem({ ...item, qty: after, updated_at: new Date().toISOString() });
   const movement = normalizeMovement({
@@ -338,20 +439,20 @@ async function issueToProduction(item, qtyTaken, issuedTo, workOrder, notes) {
     bin: item.bin, qty_taken: taken, qty_before: before, qty_after: after, issued_to: issuedTo || "Production",
     work_order: workOrder || "", notes: notes || "", movement_type: "PRODUCTION_ISSUE", created_at: new Date().toISOString(),
   });
-  const i = state.inventory.findIndex((x) => x.id === item.id);
-  if (i >= 0) state.inventory[i] = updated;
-  state.movements.unshift(movement);
-  persistLocal();
   if (state.dbReady) {
     const [{ error: itemError }, { error: moveError }] = await Promise.all([
       state.supabase.from("inventory_items").upsert(updated),
       state.supabase.from("stock_movements").insert(movement),
     ]);
-    if (itemError) alert(`Stock update failed: ${itemError.message}`);
-    if (moveError) alert(`Movement log failed: ${moveError.message}`);
+    if (itemError) throw new Error(`Stock update failed: ${itemError.message}`);
+    if (moveError) throw new Error(`Movement log failed: ${moveError.message}`);
   }
-  if (after < state.reorderThreshold) alert(`${item.item_code} is now below reorder point. Available qty: ${moneyish(after)}`);
+  const i = state.inventory.findIndex((x) => x.id === item.id);
+  if (i >= 0) state.inventory[i] = updated;
+  state.movements.unshift(movement);
+  persistLocal();
   renderAll();
+  return { item: updated, movement, belowReorder: after < state.reorderThreshold };
 }
 
 function filteredInventory() {
@@ -471,6 +572,7 @@ function renderMovements() {
 }
 
 function bindEvents() {
+  installFormValidationMessages();
   document.querySelectorAll(".nav-btn").forEach((btn) => btn.addEventListener("click", () => { state.view = btn.dataset.view; document.querySelectorAll(".nav-btn").forEach((b) => b.classList.remove("active")); btn.classList.add("active"); renderAll(); }));
   $("searchInput").addEventListener("input", (e) => { state.search = e.target.value; renderAll(); });
   $("statusFilter").addEventListener("change", (e) => { state.status = e.target.value; renderAll(); });
@@ -492,6 +594,7 @@ function bindEvents() {
 }
 
 function openItemModal(item = null) {
+  setFormMessage("itemMessage", "", true);
   $("itemModalTitle").textContent = item ? "Edit Inventory Item" : "Add Inventory Item";
   $("itemId").value = item?.id || "";
   $("supplier").value = item?.supplier || "";
@@ -506,6 +609,7 @@ function openItemModal(item = null) {
 }
 
 function openNcrModal(row = null) {
+  setFormMessage("ncrMessage", "", true);
   $("ncrModalTitle").textContent = row ? "Edit Quarantine / NCR" : "Add Quarantine / NCR";
   $("ncrId").value = row?.id || "";
   $("ncrNo").value = row?.ncr_no || "";
@@ -522,6 +626,7 @@ function openNcrModal(row = null) {
 }
 
 function openBinModal(row = null) {
+  setFormMessage("binMessage", "", true);
   $('binModalTitle').textContent = row ? 'Edit Bin Location' : 'Add Bin Location';
   $('binIdHidden').value = row?.id || '';
   $('binId').value = row?.bin_id || '';
@@ -539,6 +644,7 @@ function openBinModal(row = null) {
 }
 
 function openIssueModal(item) {
+  setFormMessage("issueMessage", "", true);
   $('issueItemId').value = item.id;
   $('issueItemCode').textContent = item.item_code;
   $('issueItemDescription').textContent = item.description;
@@ -558,44 +664,104 @@ window.editBin = (id) => openBinModal(state.binLocations.find((x) => x.id === id
 window.confirmDeleteBin = (id) => { if (confirm("Delete this bin location?")) deleteBin(id); };
 window.openIssueModalById = (id) => openIssueModal(state.inventory.find((x) => x.id === id));
 
-function handleItemSubmit(e) {
+async function handleItemSubmit(e) {
   e.preventDefault();
-  saveItem(normalizeItem({ id: $("itemId").value || uid(), supplier: $("supplier").value, item_code: $("itemCode").value, description: $("description").value, uom: $("uom").value, qty: $("qty").value, status: $("status").value, bin: $("bin").value, part_no: $("partNo").value }));
-  $("itemModal").close();
+  const form = e.currentTarget;
+  setSubmitBusy(form, true);
+  setFormMessage("itemMessage", "Saving item...", true);
+  try {
+    const item = await saveItem(normalizeItem({ id: $("itemId").value || uid(), supplier: $("supplier").value, item_code: $("itemCode").value, description: $("description").value, uom: $("uom").value, qty: $("qty").value, status: $("status").value, bin: $("bin").value, part_no: $("partNo").value }));
+    const msg = `Success: ${item.item_code} saved.`;
+    setFormMessage("itemMessage", msg, true);
+    showWorkflowMessage(msg, true);
+    closeDialogAfterSuccess("itemModal");
+  } catch (err) {
+    const msg = errMsg(err);
+    setFormMessage("itemMessage", msg, false);
+    showWorkflowMessage(msg, false);
+  } finally {
+    setSubmitBusy(form, false);
+  }
 }
 
-function handleNcrSubmit(e) {
+async function handleNcrSubmit(e) {
   e.preventDefault();
-  saveNcr(normalizeNcr({ id: $("ncrId").value || uid(), ncr_no: $("ncrNo").value, po_ref: $("poRef").value, supplier: $("ncrSupplier").value, item_code: $("ncrItemCode").value, description: $("ncrDescription").value, qty_hold: $("qtyHold").value, status: $("ncrStatus").value, reason: $("reason").value, owner: $("owner").value, target_close: $("targetClose").value }));
-  $("ncrForm").reset();
-  $("ncrModal").close();
+  const form = e.currentTarget;
+  setSubmitBusy(form, true);
+  setFormMessage("ncrMessage", "Saving NCR...", true);
+  try {
+    const row = await saveNcr(normalizeNcr({ id: $("ncrId").value || uid(), ncr_no: $("ncrNo").value, po_ref: $("poRef").value, supplier: $("ncrSupplier").value, item_code: $("ncrItemCode").value, description: $("ncrDescription").value, qty_hold: $("qtyHold").value, status: $("ncrStatus").value, reason: $("reason").value, owner: $("owner").value, target_close: $("targetClose").value }));
+    const msg = `Success: NCR ${row.ncr_no || row.item_code} saved.`;
+    setFormMessage("ncrMessage", msg, true);
+    showWorkflowMessage(msg, true);
+    closeDialogAfterSuccess("ncrModal");
+  } catch (err) {
+    const msg = errMsg(err);
+    setFormMessage("ncrMessage", msg, false);
+    showWorkflowMessage(msg, false);
+  } finally {
+    setSubmitBusy(form, false);
+  }
 }
 
-function handleBinSubmit(e) {
+async function handleBinSubmit(e) {
   e.preventDefault();
-  saveBin(normalizeBin({
-    id: $('binIdHidden').value || uid(),
-    bin_id: $('binId').value,
-    area_room: $('binArea').value,
-    rack_no: $('binRack').value,
-    level: $('binLevel').value,
-    bin_no: $('binNo').value,
-    bin_type: $('binType').value,
-    status: $('binStatus').value,
-    allowed_category: $('binCategory').value,
-    current_item_codes: $('binCurrentItems').value,
-    label_posted: $('binLabelPosted').value,
-    notes: $('binNotes').value,
-  }));
-  $('binModal').close();
+  const form = e.currentTarget;
+  setSubmitBusy(form, true);
+  setFormMessage("binMessage", "Saving bin...", true);
+  try {
+    const row = await saveBin(normalizeBin({
+      id: $('binIdHidden').value || uid(),
+      bin_id: $('binId').value,
+      area_room: $('binArea').value,
+      rack_no: $('binRack').value,
+      level: $('binLevel').value,
+      bin_no: $('binNo').value,
+      bin_type: $('binType').value,
+      status: $('binStatus').value,
+      allowed_category: $('binCategory').value,
+      current_item_codes: $('binCurrentItems').value,
+      label_posted: $('binLabelPosted').value,
+      notes: $('binNotes').value,
+    }));
+    const msg = `Success: Bin ${row.bin_id} saved.`;
+    setFormMessage("binMessage", msg, true);
+    showWorkflowMessage(msg, true);
+    closeDialogAfterSuccess("binModal");
+  } catch (err) {
+    const msg = errMsg(err);
+    setFormMessage("binMessage", msg, false);
+    showWorkflowMessage(msg, false);
+  } finally {
+    setSubmitBusy(form, false);
+  }
 }
 
-function handleIssueSubmit(e) {
+async function handleIssueSubmit(e) {
   e.preventDefault();
+  const form = e.currentTarget;
   const item = state.inventory.find((x) => x.id === $('issueItemId').value);
-  if (!item) return alert('Item not found. Refresh data and try again.');
-  issueToProduction(item, $('issueQty').value, $('issueTo').value, $('issueWorkOrder').value, $('issueNotes').value);
-  $('issueModal').close();
+  if (!item) {
+    const msg = 'Item not found. Refresh data and try again.';
+    setFormMessage("issueMessage", msg, false);
+    showWorkflowMessage(msg, false);
+    return;
+  }
+  setSubmitBusy(form, true, "Issuing...");
+  setFormMessage("issueMessage", "Issuing stock...", true);
+  try {
+    const result = await issueToProduction(item, $('issueQty').value, $('issueTo').value, $('issueWorkOrder').value, $('issueNotes').value);
+    const msg = `Success: Issued ${moneyish(result.movement.qty_taken)} ${result.item.uom || ""} of ${result.item.item_code}.`;
+    setFormMessage("issueMessage", msg, true);
+    showWorkflowMessage(result.belowReorder ? `${msg} Item is below reorder point.` : msg, true);
+    closeDialogAfterSuccess("issueModal");
+  } catch (err) {
+    const msg = errMsg(err);
+    setFormMessage("issueMessage", msg, false);
+    showWorkflowMessage(msg, false);
+  } finally {
+    setSubmitBusy(form, false);
+  }
 }
 
 async function handleSignIn(e) {
@@ -997,7 +1163,7 @@ async function raiseTicket(e) {
   showProdInventory();
   renderAll();
 }
-function setTicketMsg(msg) { if ($('ticketRequestMessage')) $('ticketRequestMessage').textContent = msg; }
+function setTicketMsg(msg) { if ($('ticketRequestMessage')) $('ticketRequestMessage').textContent = msg; if (msg) showWorkflowMessage(msg, false); }
 function showProdCart() { $('prodInventoryPanel').classList.add('hidden'); $('prodCartPanel').classList.remove('hidden'); renderCart(); }
 function showProdInventory() { $('prodCartPanel').classList.add('hidden'); $('prodInventoryPanel').classList.remove('hidden'); }
 
@@ -1101,6 +1267,7 @@ function exportWorkbookExcel() {
 }
 
 function bindEvents() {
+  installFormValidationMessages();
   document.querySelectorAll('.nav-btn').forEach((btn) => btn.addEventListener('click', () => { state.view = btn.dataset.view; document.querySelectorAll('.nav-btn').forEach((b) => b.classList.remove('active')); btn.classList.add('active'); renderAll(); }));
   $('searchInput').addEventListener('input', (e) => { state.search = e.target.value; renderAll(); });
   $('statusFilter').addEventListener('change', (e) => { state.status = e.target.value; renderAll(); });
@@ -1320,7 +1487,7 @@ async function raiseTicket(e) {
   setTicketMsg(`Success: Ticket ${ticket.ticket_no} raised for Job ${ticket.work_order}. Total items: ${lines.length}. Stores will verify and issue.`, true);
   renderAll();
 }
-function setTicketMsg(msg, success=false) { if ($('ticketRequestMessage')) { $('ticketRequestMessage').textContent = msg; $('ticketRequestMessage').classList.toggle('success', !!success); } }
+function setTicketMsg(msg, success=false) { if ($('ticketRequestMessage')) { $('ticketRequestMessage').textContent = msg; $('ticketRequestMessage').classList.toggle('success', !!success); $('ticketRequestMessage').classList.toggle('error', !success && !!msg); } if (msg) showWorkflowMessage(msg, success); }
 
 document.addEventListener('click', (e) => {
   const th = e.target.closest('[data-bin-sort]');
@@ -1416,7 +1583,7 @@ function buildReturnDraftLines(ticketNo){
     return normalizeReturnLogLine({ id: uid(), source_ticket_no: ticketNo, item_id: row.item_id, item_code: row.item_code, description: row.description, from_bin: row.from_bin, uom: row.uom || 'Nos', qty_issued: row.qty_issued, qty_already_returned: returned, qty_returnable: returnable, qty_returned: returnable > 0 ? returnable : 0 });
   }).filter((x)=>Number(x.qty_returnable || 0) > 0);
 }
-function setReturnMsg(msg, success=false){ if ($('returnMessage')) { $('returnMessage').textContent = msg || ''; $('returnMessage').classList.toggle('success', !!success); } }
+function setReturnMsg(msg, success=false){ if ($('returnMessage')) { $('returnMessage').textContent = msg || ''; $('returnMessage').classList.toggle('success', !!success); $('returnMessage').classList.toggle('error', !success && !!msg); } if (msg) showWorkflowMessage(msg, success); }
 window.onReturnSourceChange = function(ticketNo){ buildReturnDraftLines(ticketNo); renderReturnDraftLines(); };
 window.updateReturnDraftLine = function(id, value){ const line = state.returnDraftLines.find((x)=>x.id===id); if (!line) return; const num = Math.max(0, Math.min(Number(line.qty_returnable || 0), Number(value || 0))); line.qty_returned = num; renderReturnDraftLines(); };
 function renderReturnDraftLines(){

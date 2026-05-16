@@ -805,9 +805,13 @@ function setupItemAutofill() {
 
 function setV7Msg(id, message, ok = true) {
   const el = $(id);
-  if (!el) return;
-  el.textContent = message;
-  el.classList.toggle("success", ok);
+  if (el) {
+    el.textContent = message;
+    el.classList.toggle("hidden", !message);
+    el.classList.toggle("success", ok);
+    el.classList.toggle("error", !ok && !!message);
+  }
+  if (message && typeof showWorkflowMessage === "function") showWorkflowMessage(message, ok);
 }
 
 function renderV7DraftLines() {
@@ -856,9 +860,10 @@ window.removeJobWorkDraftLine = (id) => { state.jobWorkDraftLines = state.jobWor
 window.removeWipDraftLine = (id) => { state.wipDraftLines = state.wipDraftLines.filter((x) => x.id !== id); renderV7DraftLines(); };
 window.removeScrapDraftLine = (id) => { state.scrapDraftLines = state.scrapDraftLines.filter((x) => x.id !== id); renderV7DraftLines(); };
 
-function openGRNModal() { $("grnForm")?.reset(); $("grnNo").value = nextDocNo("GRN", state.grns, "grn_no"); $("grnDate").value = todayISO(); $("grnQcStatus").value = "ACCEPTED"; $("grnModal")?.showModal(); }
+function openGRNModal() { $("grnForm")?.reset(); setV7Msg("grnMessage", "", true); $("grnNo").value = nextDocNo("GRN", state.grns, "grn_no"); $("grnDate").value = todayISO(); $("grnQcStatus").value = "ACCEPTED"; $("grnModal")?.showModal(); }
 function openMIVModal() {
   $("mivForm")?.reset();
+  setV7Msg("mivMessage", "", true);
   refreshMivAvailableItemDropdown();
   $("mivNo").value = nextDocNo("MIV", state.mivs, "miv_no");
   $("mivDate").value = todayISO();
@@ -868,13 +873,15 @@ function openMIVModal() {
   $("mivModal")?.showModal();
   setTimeout(() => $("mivItemCode")?.focus(), 80);
 }
-function openDCModal() { $("dcForm")?.reset(); state.dcDraftLines = []; renderV7DraftLines(); $("dcNo").value = nextDocNo("DC/JW", state.deliveryChallans, "dc_no"); $("dcDate").value = todayISO(); $("dcStatus").value = "OPEN"; $("dcModal")?.showModal(); }
-function openJobWorkModal() { $("jobWorkForm")?.reset(); state.jobWorkDraftLines = []; renderV7DraftLines(); $("jobWorkNo").value = nextDocNo("JW", state.jobWorks, "job_work_no"); $("jobWorkDateSent").value = todayISO(); $("jobWorkExpectedReturn").value = todayISO(); $("jobWorkModal")?.showModal(); }
-function openWIPModal() { $("wipForm")?.reset(); state.wipDraftLines = []; renderV7DraftLines(); $("wipNo").value = nextDocNo("WIP", state.wipConversions, "wip_no"); $("wipStartDate").value = todayISO(); $("wipModal")?.showModal(); }
-function openScrapModal() { $("scrapForm")?.reset(); state.scrapDraftLines = []; renderV7DraftLines(); $("scrapNo").value = nextDocNo("SCR", state.scrapLogs, "scrap_no"); $("scrapDate").value = todayISO(); $("scrapModal")?.showModal(); }
+function openDCModal() { $("dcForm")?.reset(); setV7Msg("dcMessage", "", true); state.dcDraftLines = []; renderV7DraftLines(); $("dcNo").value = nextDocNo("DC/JW", state.deliveryChallans, "dc_no"); $("dcDate").value = todayISO(); $("dcStatus").value = "OPEN"; $("dcModal")?.showModal(); }
+function openJobWorkModal() { $("jobWorkForm")?.reset(); setV7Msg("jobWorkMessage", "", true); state.jobWorkDraftLines = []; renderV7DraftLines(); $("jobWorkNo").value = nextDocNo("JW", state.jobWorks, "job_work_no"); $("jobWorkDateSent").value = todayISO(); $("jobWorkExpectedReturn").value = todayISO(); $("jobWorkModal")?.showModal(); }
+function openWIPModal() { $("wipForm")?.reset(); setV7Msg("wipMessage", "", true); state.wipDraftLines = []; renderV7DraftLines(); $("wipNo").value = nextDocNo("WIP", state.wipConversions, "wip_no"); $("wipStartDate").value = todayISO(); $("wipModal")?.showModal(); }
+function openScrapModal() { $("scrapForm")?.reset(); setV7Msg("scrapMessage", "", true); state.scrapDraftLines = []; renderV7DraftLines(); $("scrapNo").value = nextDocNo("SCR", state.scrapLogs, "scrap_no"); $("scrapDate").value = todayISO(); $("scrapModal")?.showModal(); }
 
 async function saveGRN(e) {
   e.preventDefault();
+  const form = e.currentTarget;
+  setSubmitBusy?.(form, true);
   try {
     const accepted = v7Num($("grnAcceptedQty").value);
     const hold = v7Num($("grnHoldQty").value);
@@ -894,6 +901,7 @@ async function saveGRN(e) {
     }
     persistLocal(); renderAll(); setV7Msg("grnMessage", `GRN ${grn.grn_no} saved.`); setTimeout(() => $("grnModal")?.close(), 250);
   } catch (err) { setV7Msg("grnMessage", err.message, false); }
+  finally { setSubmitBusy?.(form, false); }
 }
 
 async function createMIV(header, lines) {
@@ -937,6 +945,8 @@ async function createMIV(header, lines) {
 
 async function saveMIV(e) {
   e.preventDefault();
+  const form = e.currentTarget;
+  setSubmitBusy?.(form, true);
   try {
     const code = upper($("mivItemCode").value);
     const item = mivAvailableItemByCode(code);
@@ -958,11 +968,14 @@ async function saveMIV(e) {
     setV7Msg("mivMessage", `MIV ${header.miv_no} saved.`);
     setTimeout(() => $("mivModal")?.close(), 250);
   } catch (err) { setV7Msg("mivMessage", err.message, false); }
+  finally { setSubmitBusy?.(form, false); }
 }
 
 
 async function saveDeliveryChallan(e) {
   e.preventDefault();
+  const form = e.currentTarget;
+  setSubmitBusy?.(form, true);
   try {
     const now = new Date().toISOString();
     const fallbackValue = v7Num($("dcQty").value) * v7Num($("dcRate").value);
@@ -976,10 +989,13 @@ async function saveDeliveryChallan(e) {
     await insertRows("delivery_challans", dc); await insertRows("delivery_challan_lines", lines);
     state.dcDraftLines = []; persistLocal(); renderAll(); setV7Msg("dcMessage", `Delivery challan ${dc.dc_no} saved with ${lines.length} line(s).`); setTimeout(() => $("dcModal")?.close(), 250);
   } catch (err) { setV7Msg("dcMessage", err.message, false); }
+  finally { setSubmitBusy?.(form, false); }
 }
 
 async function saveJobWork(e) {
   e.preventDefault();
+  const form = e.currentTarget;
+  setSubmitBusy?.(form, true);
   try {
     const now = new Date().toISOString();
     const fallbackLine = normalizeJobWorkLine({ id: uid(), source_item_code: $("jobWorkSourceItem").value.trim(), source_description: $("jobWorkSourceDesc").value, source_uom: $("jobWorkUom").value, qty_sent: $("jobWorkQtySent").value, output_item_code: $("jobWorkOutputItem").value.trim(), output_description: $("jobWorkOutputDesc").value, qty_received: $("jobWorkQtyReceived").value, wastage_qty: $("jobWorkWastage").value, qc_status: v7Num($("jobWorkQtyReceived").value) > 0 ? "ACCEPTED" : "PENDING", remarks: $("jobWorkRemarks").value, created_at: now });
@@ -1009,10 +1025,13 @@ async function saveJobWork(e) {
     }
     state.jobWorkDraftLines = []; persistLocal(); renderAll(); setV7Msg("jobWorkMessage", `Job work ${job.job_work_no} saved with ${lines.length} line(s).`); setTimeout(() => $("jobWorkModal")?.close(), 250);
   } catch (err) { setV7Msg("jobWorkMessage", err.message, false); }
+  finally { setSubmitBusy?.(form, false); }
 }
 
 async function saveWIPConversion(e) {
   e.preventDefault();
+  const form = e.currentTarget;
+  setSubmitBusy?.(form, true);
   try {
     const now = new Date().toISOString();
     const fallbackValue = v7Num($("wipQtyUsed").value) * v7Num($("wipUnitCost").value);
@@ -1031,10 +1050,13 @@ async function saveWIPConversion(e) {
     await addCostLayer({ item_code: wip.output_item_code, source_doc_type: "WIP", source_doc_no: wip.wip_no, qty: wip.output_qty, unit_cost: wip.output_qty ? totalValue / wip.output_qty : 0, total_value: totalValue });
     state.wipDraftLines = []; persistLocal(); renderAll(); setV7Msg("wipMessage", `WIP ${wip.wip_no} saved with ${lines.length} input line(s).`); setTimeout(() => $("wipModal")?.close(), 250);
   } catch (err) { setV7Msg("wipMessage", err.message, false); }
+  finally { setSubmitBusy?.(form, false); }
 }
 
 async function saveScrap(e) {
   e.preventDefault();
+  const form = e.currentTarget;
+  setSubmitBusy?.(form, true);
   try {
     const now = new Date().toISOString();
     const baseNo = $("scrapNo").value.trim();
@@ -1048,6 +1070,7 @@ async function saveScrap(e) {
     for (const scrap of scraps) await postLedgerEntry({ movement_type: "SCRAP", source_doc_type: scrap.source_doc_type || "SCRAP", source_doc_no: scrap.scrap_no, item_code: scrap.item_code, description: scrap.description, uom: scrap.uom, out_qty: scrap.qty_scrapped, total_value: scrap.scrap_value, remarks: scrap.reason });
     state.scrapDraftLines = []; persistLocal(); renderAll(); setV7Msg("scrapMessage", `Scrap ${baseNo} saved with ${scraps.length} line(s).`); setTimeout(() => $("scrapModal")?.close(), 250);
   } catch (err) { setV7Msg("scrapMessage", err.message, false); }
+  finally { setSubmitBusy?.(form, false); }
 }
 
 const v7BaseIssueLogGroups = issueLogGroups;
@@ -1147,13 +1170,27 @@ openItemModal = function(item = null) {
 
 handleItemSubmit = async function(e) {
   e.preventDefault();
-  const isNew = !$("itemId").value;
-  const openingQty = v7Num($("qty").value);
-  const item = normalizeItem({ id: $("itemId").value || uid(), supplier: $("supplier").value, item_code: $("itemCode").value, description: $("description").value, uom: $("uom").value, qty: isNew ? 0 : calculateItemBalance($("itemCode").value), status: $("status").value, bin: $("bin").value, part_no: $("partNo").value });
-  await saveItem(item);
-  if (isNew && openingQty > 0) await postLedgerEntry({ movement_type: "OPENING_STOCK", source_doc_type: "OPENING", source_doc_no: `OPEN-${item.item_code}`, item_id: item.id, item_code: item.item_code, description: item.description, uom: item.uom, in_qty: openingQty, to_bin: item.bin, remarks: "Opening stock from item creation" });
-  $("itemModal").close();
-  renderAll();
+  const form = e.currentTarget;
+  setSubmitBusy?.(form, true);
+  setFormMessage?.("itemMessage", "Saving item...", true);
+  try {
+    const isNew = !$("itemId").value;
+    const openingQty = v7Num($("qty").value);
+    const item = normalizeItem({ id: $("itemId").value || uid(), supplier: $("supplier").value, item_code: $("itemCode").value, description: $("description").value, uom: $("uom").value, qty: isNew ? 0 : calculateItemBalance($("itemCode").value), status: $("status").value, bin: $("bin").value, part_no: $("partNo").value });
+    await saveItem(item);
+    if (isNew && openingQty > 0) await postLedgerEntry({ movement_type: "OPENING_STOCK", source_doc_type: "OPENING", source_doc_no: `OPEN-${item.item_code}`, item_id: item.id, item_code: item.item_code, description: item.description, uom: item.uom, in_qty: openingQty, to_bin: item.bin, remarks: "Opening stock from item creation" });
+    renderAll();
+    const msg = `Success: ${item.item_code} saved${isNew && openingQty > 0 ? " and opening stock posted" : ""}.`;
+    setFormMessage?.("itemMessage", msg, true);
+    if (typeof showWorkflowMessage === "function") showWorkflowMessage(msg, true);
+    closeDialogAfterSuccess?.("itemModal");
+  } catch (err) {
+    const msg = errMsg?.(err) || err.message || String(err);
+    setFormMessage?.("itemMessage", msg, false);
+    if (typeof showWorkflowMessage === "function") showWorkflowMessage(msg, false);
+  } finally {
+    setSubmitBusy?.(form, false);
+  }
 };
 
 window.issueTicket = async function(ticketId) {
@@ -1177,7 +1214,11 @@ window.issueTicket = async function(ticketId) {
       await state.supabase.from("material_issue_tickets").upsert(dbSafeTicket(ticket));
     }
     persistLocal(); renderAll(); window.printMIV?.(header.id);
-  } catch (err) { alert(err.message || "Issue failed."); }
+  } catch (err) {
+    const msg = err.message || "Issue failed.";
+    if (typeof showWorkflowMessage === "function") showWorkflowMessage(msg, false);
+    else alert(msg);
+  }
 };
 
 function buildActionQueue() {

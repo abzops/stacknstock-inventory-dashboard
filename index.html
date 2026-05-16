@@ -11,6 +11,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
 <body>
+  <div id="workflowToastRegion" class="workflow-toast-region" aria-live="polite" aria-atomic="true"></div>
   <datalist id="itemCodeOptions"></datalist>
   <datalist id="issuedItemCodeOptions"></datalist>
   <section id="authScreen" class="auth-screen hidden">
@@ -477,6 +478,7 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
       <div class="form-row"><label>UOM<input id="uom" placeholder="Pcs / Nos / Mtr" /></label><label>Qty<input id="qty" type="number" step="0.01" required /></label></div>
       <div class="form-row"><label>Status<select id="status"><option>OK</option><option>HOLD</option><option>REJECT</option><option>MRB</option></select></label><label>Bin<input id="bin" placeholder="R2-L4-B2" /></label></div>
       <label>Part No<input id="partNo" /></label>
+      <div id="itemMessage" class="ticket-message muted hidden"></div>
       <button class="primary-btn full" type="submit">Save Item</button>
     </form>
   </dialog>
@@ -492,6 +494,7 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
       <div class="form-row"><label>Qty on Hold<input id="qtyHold" type="number" step="0.01" /></label><label>Status<select id="ncrStatus"><option>HOLD</option><option>REJECT</option><option>MRB</option><option>OK</option></select></label></div>
       <label>Reason<textarea id="reason" rows="2"></textarea></label>
       <div class="form-row"><label>Owner<input id="owner" /></label><label>Target Close<input id="targetClose" type="date" /></label></div>
+      <div id="ncrMessage" class="ticket-message muted hidden"></div>
       <button class="primary-btn full" type="submit">Save NCR</button>
     </form>
   </dialog>
@@ -507,6 +510,7 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
       <div class="form-row"><label>Status<select id="binStatus"><option>Active</option><option>Inactive</option></select></label><label>Allowed Category<input id="binCategory" placeholder="RM / STD / WIP / FG / MRO" /></label></div>
       <label>Current Item Code(s)<input id="binCurrentItems" /></label>
       <div class="form-row"><label>Label Posted<input id="binLabelPosted" placeholder="Y / N" /></label><label>Notes<input id="binNotes" /></label></div>
+      <div id="binMessage" class="ticket-message muted hidden"></div>
       <button class="primary-btn full" type="submit">Save Bin</button>
     </form>
   </dialog>
@@ -519,6 +523,7 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
       <div class="form-row"><label>Qty Taken<input id="issueQty" type="number" step="0.01" min="0.01" required /></label><label>Issued To<input id="issueTo" value="Production" /></label></div>
       <label>Work Order / Job Ref<input id="issueWorkOrder" /></label>
       <label>Notes<textarea id="issueNotes" rows="2"></textarea></label>
+      <div id="issueMessage" class="ticket-message muted hidden"></div>
       <button class="primary-btn full" type="submit">Issue & Update Stock</button>
     </form>
   </dialog>

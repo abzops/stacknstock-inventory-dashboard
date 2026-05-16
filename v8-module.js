@@ -250,6 +250,7 @@
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       e.stopImmediatePropagation();
+      call("setSubmitBusy", form, true);
       try {
         const now = new Date().toISOString();
         const code = up($id("mivItemCode")?.value);
@@ -274,6 +275,8 @@
         setTimeout(() => $id("mivModal")?.close(), 250);
       } catch (err) {
         call("setV7Msg", "mivMessage", err.message || String(err), false);
+      } finally {
+        call("setSubmitBusy", form, false);
       }
     }, true);
   }
