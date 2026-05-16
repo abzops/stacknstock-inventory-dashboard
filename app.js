@@ -230,17 +230,20 @@ async function init() {
   bindEvents();
 
   if (state.dbReady) {
-    const { data, error } = await state.supabase.auth.getSession();
-    if (error) setAuthMessage(error.message);
-    state.user = data.session?.user || null;
+    await restoreSupabaseSession(true);
 
-    state.supabase.auth.onAuthStateChange(async (event, session) => {
+    state.supabase.auth.onAuthStateChange((event, session) => {
       state.user = session?.user || null;
-      if (event === "SIGNED_OUT" || !state.user) {
-        showAuth();
-        return;
-      }
-      await enterApp();
+      setTimeout(() => {
+        if (event === "SIGNED_OUT" || !state.user) {
+          showAuth();
+          return;
+        }
+        enterApp().catch((err) => {
+          setAuthMessage(errMsg(err));
+          showAuth();
+        });
+      }, 0);
     });
 
     if (!state.user) {
@@ -255,11 +258,31 @@ async function init() {
 function setupSupabase() {
   if (window.SNS_SUPABASE_URL && window.SNS_SUPABASE_ANON_KEY && window.supabase) {
     state.supabase = window.supabase.createClient(window.SNS_SUPABASE_URL, window.SNS_SUPABASE_ANON_KEY, {
-      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storage: window.localStorage }
     });
     state.dbReady = true;
     $("connectionStatus").textContent = "Supabase connected";
     $("connectionHelp").textContent = "Connected to Supabase. Inventory changes sync with the database.";
+  }
+}
+
+async function restoreSupabaseSession(showErrors = false) {
+  if (!state.dbReady || !state.supabase?.auth) return null;
+  try {
+    const { data, error } = await state.supabase.auth.getSession();
+    if (error && showErrors) setAuthMessage(error.message);
+    let session = data?.session || null;
+    if (!session) {
+      const refreshed = await state.supabase.auth.refreshSession().catch((err) => ({ error: err, data: null }));
+      if (refreshed.error && showErrors && !/session.*missing/i.test(refreshed.error.message || "")) setAuthMessage(refreshed.error.message);
+      session = refreshed.data?.session || null;
+    }
+    state.user = session?.user || null;
+    return session;
+  } catch (err) {
+    if (showErrors) setAuthMessage(errMsg(err));
+    state.user = null;
+    return null;
   }
 }
 
@@ -297,8 +320,8 @@ function showAuth() {
 
 async function loadData() {
   if (state.dbReady) {
-    const { data: sessionData } = await state.supabase.auth.getSession();
-    state.user = sessionData.session?.user || null;
+    const session = await restoreSupabaseSession();
+    state.user = session?.user || null;
     if (!state.user) {
       showAuth();
       return;
@@ -794,8 +817,11 @@ async function handleSignIn(e) {
   if (!state.dbReady) return setAuthMessage("Add Supabase keys in config.js first.");
   state.team = $('teamSelect')?.value || state.team || 'inventory';
   localStorage.setItem('sns_selected_team', state.team);
-  const { error } = await state.supabase.auth.signInWithPassword({ email: $("authEmail").value, password: $("authPassword").value });
-  setAuthMessage(error ? error.message : "Signed in.");
+  const { data, error } = await state.supabase.auth.signInWithPassword({ email: $("authEmail").value, password: $("authPassword").value });
+  if (error) return setAuthMessage(error.message);
+  state.user = data?.session?.user || data?.user || null;
+  setAuthMessage("Signed in.");
+  await enterApp();
 }
 
 async function handleSignUp() {
@@ -951,8 +977,8 @@ function showAuth() {
 
 async function loadData() {
   if (state.dbReady) {
-    const { data: sessionData } = await state.supabase.auth.getSession();
-    state.user = sessionData.session?.user || null;
+    const session = await restoreSupabaseSession();
+    state.user = session?.user || null;
     if (!state.user) { showAuth(); return; }
 
     const [inv, ncr, bins, moves, tickets, lines] = await Promise.all([
