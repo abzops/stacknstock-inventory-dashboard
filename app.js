@@ -71,12 +71,24 @@ function setSubmitBusy(form, busy, label = "Saving...") {
 }
 
 async function withDbTimeout(operation, label = "Database request") {
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const request = controller && operation && typeof operation.abortSignal === "function"
+    ? operation.abortSignal(controller.signal)
+    : operation;
   let timer;
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out. Check the connection and try again.`)), dbTimeoutMs());
+    timer = setTimeout(() => {
+      controller?.abort();
+      reject(new Error(`${label} timed out. Check the connection and try again.`));
+    }, dbTimeoutMs());
   });
   try {
-    return await Promise.race([Promise.resolve(operation), timeout]);
+    return await Promise.race([request, timeout]);
+  } catch (err) {
+    if (/maximum call stack size exceeded/i.test(err?.message || "")) {
+      throw new Error(`${label} failed before reaching the database. Refresh the page and try again.`);
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
