@@ -11,6 +11,8 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
 <body>
+  <datalist id="itemCodeOptions"></datalist>
+  <datalist id="issuedItemCodeOptions"></datalist>
   <section id="authScreen" class="auth-screen hidden">
     <div class="auth-card">
       <img src="assets/stacknstock-logo.png" alt="Stack n Stock" class="auth-logo" />
@@ -97,14 +99,23 @@
 
       <nav class="nav">
         <button class="nav-btn active" data-view="dashboard">Dashboard</button>
+        <button class="nav-btn" data-view="action-queue">Action Queue</button>
         <button class="nav-btn" data-view="inventory">Inventory</button>
+        <button class="nav-btn" data-view="stock-ledger">Stock Ledger</button>
         <button class="nav-btn" data-view="quarantine">Quarantine / NCR</button>
         <button class="nav-btn" data-view="suppliers">Suppliers</button>
         <button class="nav-btn" data-view="bins">Bin Register</button>
         <button class="nav-btn" data-view="reorder">Reorder Point</button>
+        <button class="nav-btn" data-view="grn">GRN Register</button>
         <button class="nav-btn" data-view="tickets">Ticket Notifications</button>
+        <button class="nav-btn" data-view="miv">MIV Register</button>
         <button class="nav-btn" data-view="movements">Issue Logs</button>
-        <button class="nav-btn" data-view="returns">Return Logs</button>
+        <button class="nav-btn" data-view="returns">MRN Return Register</button>
+        <button class="nav-btn" data-view="delivery-challan">Delivery Challan</button>
+        <button class="nav-btn" data-view="jobwork">Job Work</button>
+        <button class="nav-btn" data-view="wip-conversion">WIP / Conversion</button>
+        <button class="nav-btn" data-view="scrap">Scrap Register</button>
+        <button class="nav-btn" data-view="costing">Cost Summary</button>
         <button class="nav-btn" data-view="settings">Supabase Setup</button>
       </nav>
 
@@ -173,6 +184,38 @@
               </table>
             </div>
           </article>
+          <article class="panel wide">
+            <div class="panel-head"><h3>V7 Operating Queue</h3><span id="dashboardActionCount">0 actions</span></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Priority</th><th>Action</th><th>Source</th><th>Owner</th><th>Message</th></tr></thead>
+                <tbody id="dashboardActionRows"></tbody>
+              </table>
+            </div>
+          </article>
+          <article class="panel">
+            <div class="panel-head"><h3>Job Work Health</h3><span id="dashboardJobWorkSummary">Live</span></div>
+            <div id="dashboardJobWorkCards" class="v7-mini-grid"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-head"><h3>WIP + Cost Health</h3><span id="dashboardWipSummary">Live</span></div>
+            <div id="dashboardWipCards" class="v7-mini-grid"></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="action-queueView" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Dashboard Action Queue</h3>
+            <div class="panel-actions"><button class="ghost-btn compact" data-export-table="action-queue">Export Table</button><span id="actionQueueCount">0 actions</span></div>
+          </div>
+          <div class="table-wrap tall">
+            <table>
+              <thead><tr><th>Priority</th><th>Type</th><th>Source</th><th>Item</th><th>Owner</th><th>Message</th></tr></thead>
+              <tbody id="actionQueueRows"></tbody>
+            </table>
+          </div>
         </div>
       </section>
 
@@ -275,7 +318,7 @@
       <section id="returnsView" class="view">
         <div class="panel">
           <div class="panel-head">
-            <h3>Return Logs</h3>
+            <h3>MRN Return Register</h3>
             <div class="panel-actions"><button class="ghost-btn compact" id="openReturnModalBtn">+ New Return Log</button><button class="ghost-btn compact" data-export-table="returns">Export Table</button><span id="returnCount">0 logs</span></div>
           </div>
           <p class="muted">Inventory team can record reverse stock returns against issued tickets. Saving a return log adds the quantity back into inventory and creates reverse movement entries.</p>
@@ -283,6 +326,130 @@
             <table>
               <thead><tr><th>Return No</th><th>Date</th><th>Source Ticket</th><th>Returned By</th><th>Items</th><th>Total Qty</th><th>Mail</th><th>Action</th></tr></thead>
               <tbody id="returnRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="grnView" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>GRN Register</h3>
+            <div class="panel-actions"><button class="ghost-btn compact" id="openGrnModal">+ New GRN</button><button class="ghost-btn compact" data-export-table="grn">Export Table</button><span id="grnCount">0 GRNs</span></div>
+          </div>
+          <p class="muted">Supplier receipts post accepted quantity into the stock ledger and move hold or rejected quantity into quarantine.</p>
+          <div class="table-wrap tall">
+            <table>
+              <thead><tr><th>GRN No</th><th>Date</th><th>Supplier</th><th>PO / Invoice</th><th>Lines</th><th>Accepted</th><th>Hold / Reject</th><th>QC</th><th>Action</th></tr></thead>
+              <tbody id="grnRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="mivView" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>MIV Issue Register</h3>
+            <div class="panel-actions"><button class="ghost-btn compact" id="openMivModal">+ Direct MIV</button><button class="ghost-btn compact" data-export-table="miv">Export Table</button><span id="mivCount">0 MIVs</span></div>
+          </div>
+          <p class="muted">Formal material issue vouchers are created from production tickets or direct stores issue, and always post stock OUT through the ledger.</p>
+          <div class="table-wrap tall">
+            <table>
+              <thead><tr><th>MIV No</th><th>Date</th><th>Ticket</th><th>Issued To</th><th>Work Order</th><th>Lines</th><th>Total Qty</th><th>Status</th><th>Action</th></tr></thead>
+              <tbody id="mivRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="delivery-challanView" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Delivery Challan Register</h3>
+            <div class="panel-actions"><button class="ghost-btn compact" id="openDcModal">+ New DC</button><button class="ghost-btn compact" data-export-table="delivery-challan">Export Table</button><span id="dcCount">0 DCs</span></div>
+          </div>
+          <div class="table-wrap tall">
+            <table>
+              <thead><tr><th>DC No</th><th>Date</th><th>Vendor</th><th>Job Work</th><th>Expected Return</th><th>Qty</th><th>Approx Value</th><th>Status</th><th>Action</th></tr></thead>
+              <tbody id="dcRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="jobworkView" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Outside Job Work</h3>
+            <div class="panel-actions"><button class="ghost-btn compact" id="openJobWorkModal">+ Job Work Out/In</button><button class="ghost-btn compact" data-export-table="jobwork">Export Table</button><span id="jobWorkCount">0 jobs</span></div>
+          </div>
+          <div id="materialAtVendorCards" class="overview-grid"></div>
+          <div class="table-wrap tall">
+            <table>
+              <thead><tr><th>Job Work No</th><th>Vendor</th><th>DC</th><th>Source Item</th><th>Sent</th><th>Output Item</th><th>Received</th><th>Expected</th><th>Status</th><th>Action</th></tr></thead>
+              <tbody id="jobWorkRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="wip-conversionView" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>WIP / Value-Added Conversion</h3>
+            <div class="panel-actions"><button class="ghost-btn compact" id="openWipModal">+ New Conversion</button><button class="ghost-btn compact" data-export-table="wip-conversion">Export Table</button><span id="wipCount">0 WIP</span></div>
+          </div>
+          <div class="table-wrap tall">
+            <table>
+              <thead><tr><th>WIP No</th><th>Start</th><th>Work Order</th><th>Process</th><th>Input</th><th>Output</th><th>Output Qty</th><th>Cost</th><th>Status</th><th>Action</th></tr></thead>
+              <tbody id="wipRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="stock-ledgerView" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Stock Ledger</h3>
+            <div class="panel-actions"><button class="ghost-btn compact" data-export-table="stock-ledger">Export Table</button><span id="ledgerCount">0 entries</span></div>
+          </div>
+          <div class="table-wrap tall">
+            <table>
+              <thead><tr><th>Date</th><th>Movement</th><th>Doc</th><th>Item</th><th>In</th><th>Out</th><th>Before</th><th>After</th><th>From</th><th>To</th><th>Remarks</th></tr></thead>
+              <tbody id="ledgerRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="scrapView" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Scrap Register</h3>
+            <div class="panel-actions"><button class="ghost-btn compact" id="openScrapModal">+ Scrap Entry</button><button class="ghost-btn compact" data-export-table="scrap">Export Table</button><span id="scrapCount">0 scrap records</span></div>
+          </div>
+          <div class="table-wrap tall">
+            <table>
+              <thead><tr><th>Scrap No</th><th>Date</th><th>Source</th><th>Item</th><th>Qty</th><th>Reason</th><th>Value</th><th>Status</th></tr></thead>
+              <tbody id="scrapRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="costingView" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Cost Summary</h3>
+            <div class="panel-actions"><button class="ghost-btn compact" data-export-table="costing">Export Table</button><span id="costLayerCount">0 cost layers</span></div>
+          </div>
+          <div id="costSummaryCards" class="overview-grid"></div>
+          <div class="table-wrap tall">
+            <table>
+              <thead><tr><th>Item Code</th><th>Source</th><th>Qty</th><th>Unit Cost</th><th>Total Value</th><th>Method</th><th>Date</th></tr></thead>
+              <tbody id="costRows"></tbody>
             </table>
           </div>
         </div>
@@ -377,16 +544,17 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
       </div>
       <div class="dc-form-grid">
         <label>Source Issue Ticket <em>*</em><select id="returnSourceTicket" required></select></label>
+        <label>Item Code from MIV / Issue Logs<select id="returnItemCode"></select></label>
+      </div>
+      <div class="dc-form-grid">
         <label>Returned By <em>*</em><input id="returnedBy" placeholder="Production / Department" required /></label>
-      </div>
-      <div class="dc-form-grid">
         <label>Returned By Email <em>*</em><input id="returnedByEmail" type="email" placeholder="name@company.com" required /></label>
-        <label>Received By (Inventory) <em>*</em><input id="receivedBy" placeholder="Inventory team member" required /></label>
       </div>
       <div class="dc-form-grid">
+        <label>Received By (Inventory) <em>*</em><input id="receivedBy" placeholder="Inventory team member" required /></label>
         <label>Notes<input id="returnNotes" placeholder="Reason / condition / reference" /></label>
-        <label>Approval Mail Status<input id="approvalMailStatus" value="Will send after save" disabled /></label>
       </div>
+      <label>Approval Mail Status<input id="approvalMailStatus" value="Will send after save" disabled /></label>
       <div class="return-line-wrap">
         <div class="return-line-head"><span>Item</span><span>Issued</span><span>Already Returned</span><span>Returnable</span><span>Qty Returning</span><span>Bin</span></div>
         <div id="returnLineRows" class="return-line-list"></div>
@@ -405,7 +573,124 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
     </div>
   </dialog>
 
+  <dialog id="grnModal">
+    <form class="modal-card wide-modal v7-modal-card" id="grnForm">
+      <div class="modal-head"><h3>Create GRN</h3><button type="button" class="icon-btn" data-close="grnModal">x</button></div>
+      <div class="dc-form-grid">
+        <label>GRN No<input id="grnNo" required /></label><label>GRN Date<input id="grnDate" type="date" required /></label>
+        <label>Supplier<input id="grnSupplier" required /></label><label>PO No<input id="grnPoNo" /></label>
+        <label>Invoice No<input id="grnInvoiceNo" /></label><label>Received By<input id="grnReceivedBy" /></label>
+        <label>Item Code<input id="grnItemCode" required /></label><label>Description<input id="grnDescription" /></label>
+        <label>UOM<input id="grnUom" /></label><label>Received Qty<input id="grnReceivedQty" type="number" step="0.01" min="0" required /></label>
+        <label>Accepted Qty<input id="grnAcceptedQty" type="number" step="0.01" min="0" required /></label><label>Hold Qty<input id="grnHoldQty" type="number" step="0.01" min="0" value="0" /></label>
+        <label>Rejected Qty<input id="grnRejectedQty" type="number" step="0.01" min="0" value="0" /></label><label>Putaway Bin<input id="grnPutawayBin" /></label>
+        <label>Unit Rate<input id="grnUnitRate" type="number" step="0.01" min="0" value="0" /></label><label>QC Status<select id="grnQcStatus"><option>ACCEPTED</option><option>PENDING</option><option>HOLD</option><option>REJECTED</option></select></label>
+      </div>
+      <label>Remarks<textarea id="grnRemarks" rows="2"></textarea></label>
+      <div id="grnMessage" class="ticket-message muted"></div>
+      <button class="primary-btn full" type="submit">Save GRN + Post Ledger</button>
+    </form>
+  </dialog>
+
+  <dialog id="mivModal">
+    <form class="modal-card wide-modal v7-modal-card" id="mivForm">
+      <div class="modal-head"><h3>Create Direct MIV</h3><button type="button" class="icon-btn" data-close="mivModal">x</button></div>
+      <div class="dc-form-grid">
+        <label>MIV No<input id="mivNo" required /></label><label>MIV Date<input id="mivDate" type="date" required /></label>
+        <label>Issued To<input id="mivIssuedTo" value="Production" /></label><label>Department<input id="mivDepartment" value="Production" /></label>
+        <label>Work Order<input id="mivWorkOrder" /></label><label>Return Expected<select id="mivReturnExpected"><option>N</option><option>Y</option></select></label>
+        <label>Item Code<input id="mivItemCode" required /></label><label>Description<input id="mivDescription" /></label>
+        <label>UOM<input id="mivUom" /></label><label>From Bin<input id="mivFromBin" /></label>
+        <label>Qty Issued<input id="mivQtyIssued" type="number" step="0.01" min="0.01" required /></label><label>Received By<input id="mivReceivedBy" /></label>
+      </div>
+      <label>Remarks<textarea id="mivRemarks" rows="2"></textarea></label>
+      <div id="mivMessage" class="ticket-message muted"></div>
+      <button class="primary-btn full" type="submit">Save MIV + Issue Stock</button>
+    </form>
+  </dialog>
+
+  <dialog id="dcModal">
+    <form class="modal-card wide-modal v7-modal-card" id="dcForm">
+      <div class="modal-head"><h3>Create Delivery Challan</h3><button type="button" class="icon-btn" data-close="dcModal">x</button></div>
+      <div class="dc-form-grid">
+        <label>DC No<input id="dcNo" required /></label><label>DC Date<input id="dcDate" type="date" required /></label>
+        <label>Vendor<input id="dcVendor" required /></label><label>Linked Job Work No<input id="dcJobWorkNo" /></label>
+        <label>Expected Return<input id="dcExpectedReturn" type="date" /></label><label>Vehicle No<input id="dcVehicleNo" /></label>
+        <label>Item Code<select id="dcItemCode" required></select></label><label>Description<input id="dcDescription" /></label>
+        <label>UOM<input id="dcUom" /></label><label>Qty<input id="dcQty" type="number" step="0.01" min="0.01" required /></label>
+        <label>Rate<input id="dcRate" type="number" step="0.01" min="0" value="0" /></label><label>Status<select id="dcStatus"><option>OPEN</option><option>CLOSED</option></select></label>
+      </div>
+      <button class="ghost-btn compact" type="button" id="addDcLineBtn">+ Add Product Line</button>
+      <div class="table-wrap v7-draft-wrap"><table><thead><tr><th>Item Code</th><th>Description</th><th>UOM</th><th>Qty</th><th>Rate</th><th>Value</th><th>Action</th></tr></thead><tbody id="dcDraftRows"></tbody></table></div>
+      <label>Remarks<textarea id="dcRemarks" rows="2"></textarea></label>
+      <div id="dcMessage" class="ticket-message muted"></div>
+      <button class="primary-btn full" type="submit">Save Delivery Challan</button>
+    </form>
+  </dialog>
+
+  <dialog id="jobWorkModal">
+    <form class="modal-card wide-modal v7-modal-card" id="jobWorkForm">
+      <div class="modal-head"><h3>Create Job Work</h3><button type="button" class="icon-btn" data-close="jobWorkModal">x</button></div>
+      <div class="dc-form-grid">
+        <label>Job Work No<input id="jobWorkNo" required /></label><label>Date Sent<input id="jobWorkDateSent" type="date" required /></label>
+        <label>Vendor<input id="jobWorkVendor" required /></label><label>Delivery Challan No<input id="jobWorkDcNo" /></label>
+        <label>Expected Return<input id="jobWorkExpectedReturn" type="date" required /></label><label>Process<input id="jobWorkProcess" /></label>
+        <label>Source Item Code<select id="jobWorkSourceItem" required></select></label><label>Source Description<input id="jobWorkSourceDesc" /></label>
+        <label>UOM<input id="jobWorkUom" /></label><label>Qty Sent<input id="jobWorkQtySent" type="number" step="0.01" min="0.01" required /></label>
+        <label>Output Item Code<input id="jobWorkOutputItem" /></label><label>Output Description<input id="jobWorkOutputDesc" /></label>
+        <label>Qty Received<input id="jobWorkQtyReceived" type="number" step="0.01" min="0" value="0" /></label><label>Wastage Qty<input id="jobWorkWastage" type="number" step="0.01" min="0" value="0" /></label>
+        <label>Job Charges<input id="jobWorkCharges" type="number" step="0.01" min="0" value="0" /></label><label>Transport Cost<input id="jobWorkTransport" type="number" step="0.01" min="0" value="0" /></label>
+      </div>
+      <button class="ghost-btn compact" type="button" id="addJobWorkLineBtn">+ Add Product Line</button>
+      <div class="table-wrap v7-draft-wrap"><table><thead><tr><th>Source Item</th><th>Sent</th><th>Output Item</th><th>Received</th><th>Wastage</th><th>Action</th></tr></thead><tbody id="jobWorkDraftRows"></tbody></table></div>
+      <label>Remarks<textarea id="jobWorkRemarks" rows="2"></textarea></label>
+      <div id="jobWorkMessage" class="ticket-message muted"></div>
+      <button class="primary-btn full" type="submit">Save Job Work + Post Ledger</button>
+    </form>
+  </dialog>
+
+  <dialog id="wipModal">
+    <form class="modal-card wide-modal v7-modal-card" id="wipForm">
+      <div class="modal-head"><h3>Create WIP Conversion</h3><button type="button" class="icon-btn" data-close="wipModal">x</button></div>
+      <div class="dc-form-grid">
+        <label>WIP No<input id="wipNo" required /></label><label>Start Date<input id="wipStartDate" type="date" required /></label>
+        <label>Work Order<input id="wipWorkOrder" /></label><label>Process Name<input id="wipProcessName" /></label>
+        <label>Input Item Code<select id="wipInputItem" required></select></label><label>Input Description<input id="wipInputDesc" /></label>
+        <label>Input UOM<input id="wipInputUom" /></label><label>Qty Used<input id="wipQtyUsed" type="number" step="0.01" min="0.01" required /></label>
+        <label>Input Unit Cost<input id="wipUnitCost" type="number" step="0.01" min="0" value="0" /></label><label>Output Item Code<input id="wipOutputItem" required /></label>
+        <label>Output Description<input id="wipOutputDesc" /></label><label>Output UOM<input id="wipOutputUom" /></label>
+        <label>Output Qty<input id="wipOutputQty" type="number" step="0.01" min="0.01" required /></label><label>Labour Cost<input id="wipLabourCost" type="number" step="0.01" min="0" value="0" /></label>
+        <label>Consumables Cost<input id="wipConsumablesCost" type="number" step="0.01" min="0" value="0" /></label>
+      </div>
+      <button class="ghost-btn compact" type="button" id="addWipInputLineBtn">+ Add Input Product</button>
+      <div class="table-wrap v7-draft-wrap"><table><thead><tr><th>Input Item</th><th>Description</th><th>UOM</th><th>Qty Used</th><th>Unit Cost</th><th>Total</th><th>Action</th></tr></thead><tbody id="wipDraftRows"></tbody></table></div>
+      <label>Remarks<textarea id="wipRemarks" rows="2"></textarea></label>
+      <div id="wipMessage" class="ticket-message muted"></div>
+      <button class="primary-btn full" type="submit">Save Conversion + Post Ledger</button>
+    </form>
+  </dialog>
+
+  <dialog id="scrapModal">
+    <form class="modal-card wide-modal v7-modal-card" id="scrapForm">
+      <div class="modal-head"><h3>Create Scrap Entry</h3><button type="button" class="icon-btn" data-close="scrapModal">x</button></div>
+      <div class="dc-form-grid">
+        <label>Scrap No<input id="scrapNo" required /></label><label>Scrap Date<input id="scrapDate" type="date" required /></label>
+        <label>Source Type<input id="scrapSourceType" /></label><label>Source No<input id="scrapSourceNo" /></label>
+        <label>Item Code<select id="scrapItemCode" required></select></label><label>Description<input id="scrapDescription" /></label>
+        <label>UOM<input id="scrapUom" /></label><label>Qty Scrapped<input id="scrapQty" type="number" step="0.01" min="0.01" required /></label>
+        <label>Scrap Value<input id="scrapValue" type="number" step="0.01" min="0" value="0" /></label><label>Approved By<input id="scrapApprovedBy" /></label>
+      </div>
+      <button class="ghost-btn compact" type="button" id="addScrapLineBtn">+ Add Product Line</button>
+      <div class="table-wrap v7-draft-wrap"><table><thead><tr><th>Item Code</th><th>Description</th><th>UOM</th><th>Qty</th><th>Value</th><th>Action</th></tr></thead><tbody id="scrapDraftRows"></tbody></table></div>
+      <label>Reason<textarea id="scrapReason" rows="2" required></textarea></label>
+      <div id="scrapMessage" class="ticket-message muted"></div>
+      <button class="primary-btn full" type="submit">Save Scrap + Reduce Stock</button>
+    </form>
+  </dialog>
+
   <script src="config.js"></script>
   <script src="app.js"></script>
+  <script src="v7-module.js?v=20260516-issued-select"></script>
+  <script src="v8-module.js?v=20260516-v922-flow-fix"></script>
 </body>
 </html>

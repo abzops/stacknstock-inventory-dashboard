@@ -1,0 +1,3 @@
+/* V8.2 safety layer styles. Keeps the existing Stack n Stock UI unchanged. */
+.sns-v812-hidden-original { display: none !important; }
+#mivItemCode option { background: #050505; color: #fff; }
