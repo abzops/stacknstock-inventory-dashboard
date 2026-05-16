@@ -373,14 +373,16 @@ function ensureInventoryItem({ item_code, description = "", uom = "", supplier =
 async function insertRows(table, rows) {
   const list = Array.isArray(rows) ? rows : [rows];
   if (!state.dbReady || !state.user || !list.length) return;
-  const { error } = await state.supabase.from(table).insert(list);
+  const request = state.supabase.from(table).insert(list);
+  const { error } = typeof withDbTimeout === "function" ? await withDbTimeout(request, `${table} save`) : await request;
   if (error) throw new Error(`${table} save failed: ${error.message}`);
 }
 
 async function upsertRows(table, rows) {
   const list = Array.isArray(rows) ? rows : [rows];
   if (!state.dbReady || !state.user || !list.length) return;
-  const { error } = await state.supabase.from(table).upsert(list);
+  const request = state.supabase.from(table).upsert(list);
+  const { error } = typeof withDbTimeout === "function" ? await withDbTimeout(request, `${table} save`) : await request;
   if (error) throw new Error(`${table} save failed: ${error.message}`);
 }
 
@@ -421,7 +423,11 @@ async function postLedgerEntry(entry) {
   if (row.to_bin) item.bin = row.to_bin;
   persistLocal();
   await insertRows("stock_ledger", row);
-  if (state.dbReady && state.user) await state.supabase.from("inventory_items").upsert(item);
+  if (state.dbReady && state.user) {
+    const request = state.supabase.from("inventory_items").upsert(item);
+    const { error } = typeof withDbTimeout === "function" ? await withDbTimeout(request, "Inventory balance update") : await request;
+    if (error) throw new Error(`Inventory balance update failed: ${error.message}`);
+  }
   return row;
 }
 
@@ -811,7 +817,7 @@ function setV7Msg(id, message, ok = true) {
     el.classList.toggle("success", ok);
     el.classList.toggle("error", !ok && !!message);
   }
-  if (message && typeof showWorkflowMessage === "function") showWorkflowMessage(message, ok);
+  if (message && typeof showWorkflowMessage === "function" && !/^Saving\b/i.test(message)) showWorkflowMessage(message, ok);
 }
 
 function renderV7DraftLines() {
@@ -882,6 +888,7 @@ async function saveGRN(e) {
   e.preventDefault();
   const form = e.currentTarget;
   setSubmitBusy?.(form, true);
+  setV7Msg("grnMessage", "Saving GRN...", true);
   try {
     const accepted = v7Num($("grnAcceptedQty").value);
     const hold = v7Num($("grnHoldQty").value);
@@ -933,8 +940,16 @@ async function createMIV(header, lines) {
     state.mivs = state.mivs.filter((x) => x.id !== header.id);
     state.mivLines = state.mivLines.filter((x) => x.miv_id !== header.id);
     if (state.dbReady && state.user) {
-      try { await state.supabase.from("miv_lines").delete().eq("miv_id", header.id); } catch (_) {}
-      try { await state.supabase.from("miv_headers").delete().eq("id", header.id); } catch (_) {}
+      try {
+        const lineDelete = state.supabase.from("miv_lines").delete().eq("miv_id", header.id);
+        if (typeof withDbTimeout === "function") await withDbTimeout(lineDelete, "MIV rollback line delete");
+        else await lineDelete;
+      } catch (_) {}
+      try {
+        const headerDelete = state.supabase.from("miv_headers").delete().eq("id", header.id);
+        if (typeof withDbTimeout === "function") await withDbTimeout(headerDelete, "MIV rollback header delete");
+        else await headerDelete;
+      } catch (_) {}
     }
     persistLocal();
     throw err;
@@ -1209,9 +1224,11 @@ window.issueTicket = async function(ticketId) {
     for (const line of lines) line.qty_issued = v7Num(line.qty_requested);
     ticket.status = "ISSUED"; ticket.issued_by = state.user?.email || "Stores"; ticket.issued_at = now; ticket.updated_at = now;
     if (state.dbReady) {
-      await state.supabase.from("stock_movements").insert(movements);
-      for (const line of lines) await state.supabase.from("material_issue_ticket_lines").upsert(line);
-      await state.supabase.from("material_issue_tickets").upsert(dbSafeTicket(ticket));
+      const movementInsert = state.supabase.from("stock_movements").insert(movements);
+      if (typeof withDbTimeout === "function") await withDbTimeout(movementInsert, "Ticket movement save");
+      else await movementInsert;
+      for (const line of lines) await upsertRows("material_issue_ticket_lines", line);
+      await upsertRows("material_issue_tickets", dbSafeTicket(ticket));
     }
     persistLocal(); renderAll(); window.printMIV?.(header.id);
   } catch (err) {

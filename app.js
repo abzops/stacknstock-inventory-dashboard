@@ -20,6 +20,7 @@ const cleanStatus = (s) => (s || "OK").toString().trim().toUpperCase();
 const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
 const moneyish = (n) => Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
 const errMsg = (err) => err?.message || String(err || "Something went wrong.");
+const dbTimeoutMs = () => Number(window.SNS_DB_TIMEOUT_MS || 12000);
 
 function showWorkflowMessage(message, ok = true) {
   if (!message) return;
@@ -66,6 +67,18 @@ function setSubmitBusy(form, busy, label = "Saving...") {
     btn.disabled = false;
     if (btn.dataset.originalText) btn.textContent = btn.dataset.originalText;
     delete btn.dataset.originalText;
+  }
+}
+
+async function withDbTimeout(operation, label = "Database request") {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out. Check the connection and try again.`)), dbTimeoutMs());
+  });
+  try {
+    return await Promise.race([Promise.resolve(operation), timeout]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -358,7 +371,7 @@ function persistLocal() {
 async function saveItem(item) {
   item.updated_at = new Date().toISOString();
   if (state.dbReady) {
-    const { error } = await state.supabase.from("inventory_items").upsert(item);
+    const { error } = await withDbTimeout(state.supabase.from("inventory_items").upsert(item), "Item save");
     if (error) throw new Error(`Item save failed: ${error.message}`);
   }
   const i = state.inventory.findIndex((x) => x.id === item.id);
@@ -382,7 +395,7 @@ async function deleteItem(id) {
 async function saveNcr(row) {
   row.updated_at = new Date().toISOString();
   if (state.dbReady) {
-    const { error } = await state.supabase.from("quarantine_items").upsert(row);
+    const { error } = await withDbTimeout(state.supabase.from("quarantine_items").upsert(row), "NCR save");
     if (error) throw new Error(`NCR save failed: ${error.message}`);
   }
   const i = state.quarantine.findIndex((x) => x.id === row.id);
@@ -406,7 +419,7 @@ async function deleteNcr(id) {
 async function saveBin(row) {
   row.updated_at = new Date().toISOString();
   if (state.dbReady) {
-    const { error } = await state.supabase.from("bin_locations").upsert(row);
+    const { error } = await withDbTimeout(state.supabase.from("bin_locations").upsert(row), "Bin save");
     if (error) throw new Error(`Bin save failed: ${error.message}`);
   }
   const i = state.binLocations.findIndex((x) => x.id === row.id);
@@ -441,8 +454,8 @@ async function issueToProduction(item, qtyTaken, issuedTo, workOrder, notes) {
   });
   if (state.dbReady) {
     const [{ error: itemError }, { error: moveError }] = await Promise.all([
-      state.supabase.from("inventory_items").upsert(updated),
-      state.supabase.from("stock_movements").insert(movement),
+      withDbTimeout(state.supabase.from("inventory_items").upsert(updated), "Stock update"),
+      withDbTimeout(state.supabase.from("stock_movements").insert(movement), "Movement log"),
     ]);
     if (itemError) throw new Error(`Stock update failed: ${itemError.message}`);
     if (moveError) throw new Error(`Movement log failed: ${moveError.message}`);
@@ -1151,9 +1164,9 @@ async function raiseTicket(e) {
   state.ticketLines.push(...lines);
   persistLocal();
   if (state.dbReady) {
-    const { error: tErr } = await state.supabase.from('material_issue_tickets').insert(dbSafeTicket(ticket));
+    const { error: tErr } = await withDbTimeout(state.supabase.from('material_issue_tickets').insert(dbSafeTicket(ticket)), "Ticket save").catch((err) => ({ error: err }));
     if (tErr) return setTicketMsg(`Ticket save failed: ${tErr.message}`);
-    const { error: lErr } = await state.supabase.from('material_issue_ticket_lines').insert(lines);
+    const { error: lErr } = await withDbTimeout(state.supabase.from('material_issue_ticket_lines').insert(lines), "Ticket line save").catch((err) => ({ error: err }));
     if (lErr) return setTicketMsg(`Ticket line save failed: ${lErr.message}`);
   }
   state.cart = [];
@@ -1196,10 +1209,10 @@ window.issueTicket = async (ticketId) => {
   state.movements.unshift(...movements);
   persistLocal();
   if (state.dbReady) {
-    for (const item of updatedItems) await state.supabase.from('inventory_items').upsert(item);
-    for (const line of updatedLines) await state.supabase.from('material_issue_ticket_lines').upsert(line);
-    await state.supabase.from('stock_movements').insert(movements);
-    await state.supabase.from('material_issue_tickets').upsert(dbSafeTicket(ticket));
+    for (const item of updatedItems) await withDbTimeout(state.supabase.from('inventory_items').upsert(item), "Ticket inventory update");
+    for (const line of updatedLines) await withDbTimeout(state.supabase.from('material_issue_ticket_lines').upsert(line), "Ticket line update");
+    await withDbTimeout(state.supabase.from('stock_movements').insert(movements), "Ticket movement save");
+    await withDbTimeout(state.supabase.from('material_issue_tickets').upsert(dbSafeTicket(ticket)), "Ticket status update");
   }
   renderAll();
   printTicket(ticketId);
@@ -1210,7 +1223,7 @@ window.rejectTicket = async (ticketId) => {
   if (!ticket || !confirm(`Reject ${ticket.ticket_no}?`)) return;
   ticket.status = 'REJECTED'; ticket.updated_at = new Date().toISOString();
   persistLocal();
-  if (state.dbReady) await state.supabase.from('material_issue_tickets').upsert(dbSafeTicket(ticket));
+  if (state.dbReady) await withDbTimeout(state.supabase.from('material_issue_tickets').upsert(dbSafeTicket(ticket)), "Ticket reject update");
   renderAll();
 };
 
@@ -1477,9 +1490,9 @@ async function raiseTicket(e) {
   const lines = valid.map((c) => { const item = state.inventory.find((x) => x.id === c.item_id); return normalizeTicketLine({ id: uid(), ticket_id: ticket.id, item_id: item.id, item_code: item.item_code, part_no: item.part_no, description: item.description, lot_trace_id: '', from_bin: item.bin, uom: item.uom, qty_requested: c.qty_requested, qty_issued: 0 }); });
   state.tickets.unshift(ticket); state.ticketLines.push(...lines); persistLocal();
   if (state.dbReady) {
-    const { error: tErr } = await state.supabase.from('material_issue_tickets').insert(dbSafeTicket(ticket));
+    const { error: tErr } = await withDbTimeout(state.supabase.from('material_issue_tickets').insert(dbSafeTicket(ticket)), "Ticket save").catch((err) => ({ error: err }));
     if (tErr) return setTicketMsg(`Ticket save failed: ${tErr.message}`, false);
-    const { error: lErr } = await state.supabase.from('material_issue_ticket_lines').insert(lines);
+    const { error: lErr } = await withDbTimeout(state.supabase.from('material_issue_ticket_lines').insert(lines), "Ticket line save").catch((err) => ({ error: err }));
     if (lErr) return setTicketMsg(`Ticket line save failed: ${lErr.message}`, false);
   }
   state.cart = [];
@@ -1697,17 +1710,17 @@ async function saveReturnLog(e){
     }
 
     if (state.dbReady) {
-      const { error: r1 } = await state.supabase.from('return_logs').insert(ret);
+      const { error: r1 } = await withDbTimeout(state.supabase.from('return_logs').insert(ret), "Return log save");
       if (r1) return setReturnMsg(`Return log save failed: ${r1.message}`, false);
 
-      const { error: r2 } = await state.supabase.from('return_log_lines').insert(lines);
+      const { error: r2 } = await withDbTimeout(state.supabase.from('return_log_lines').insert(lines), "Return line save");
       if (r2) return setReturnMsg(`Return lines save failed: ${r2.message}`, false);
 
-      const { error: r3 } = await state.supabase.from('stock_movements').insert(movements);
+      const { error: r3 } = await withDbTimeout(state.supabase.from('stock_movements').insert(movements), "Return movement save");
       if (r3) return setReturnMsg(`Stock movement save failed: ${r3.message}`, false);
 
       for (const item of updatedItems) {
-        const { error: itemErr } = await state.supabase.from('inventory_items').upsert(item);
+        const { error: itemErr } = await withDbTimeout(state.supabase.from('inventory_items').upsert(item), "Return inventory update");
         if (itemErr) return setReturnMsg(`Inventory update failed: ${itemErr.message}`, false);
       }
     }
@@ -1720,13 +1733,13 @@ async function saveReturnLog(e){
         if (mailErr) {
           ret.approval_mail_sent = false;
           ret.approval_mail_error = mailErr.message || String(mailErr);
-          await state.supabase
+          await withDbTimeout(state.supabase
             .from('return_logs')
             .update({
               approval_mail_sent: false,
               approval_mail_error: ret.approval_mail_error,
             })
-            .eq('id', ret.id);
+            .eq('id', ret.id), "Return mail status update");
           if ($('approvalMailStatus')) $('approvalMailStatus').value = 'Mail failed';
           setReturnMsg(`Return log ${ret.return_no} saved, but approval email failed: ${ret.approval_mail_error}`, false);
         } else {
@@ -1739,13 +1752,13 @@ async function saveReturnLog(e){
       } catch (mailErr) {
         ret.approval_mail_sent = false;
         ret.approval_mail_error = mailErr?.message || String(mailErr);
-        await state.supabase
+        await withDbTimeout(state.supabase
           .from('return_logs')
           .update({
             approval_mail_sent: false,
             approval_mail_error: ret.approval_mail_error,
           })
-          .eq('id', ret.id);
+          .eq('id', ret.id), "Return mail status update");
         if ($('approvalMailStatus')) $('approvalMailStatus').value = 'Mail failed';
         setReturnMsg(`Return log ${ret.return_no} saved, but approval email failed/timed out.`, false);
       }
@@ -1764,6 +1777,8 @@ async function saveReturnLog(e){
     }
     renderAll();
     setTimeout(() => $('returnModal')?.close(), 350);
+  } catch (err) {
+    setReturnMsg(errMsg(err), false);
   } finally {
     state.returnSaveInProgress = false;
     if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = originalText; }
