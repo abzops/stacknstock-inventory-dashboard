@@ -606,7 +606,7 @@ function mivIssueRows() {
 
 function movementIssueRows() {
   return state.movements
-    .filter((m) => upper(m.movement_type) !== "PRODUCTION_RETURN")
+    .filter((m) => typeof isIssueLogMovement === "function" ? isIssueLogMovement(m) : ["PRODUCTION_ISSUE", "PRODUCTION_TICKET_ISSUE"].includes(upper(m.movement_type)))
     .map((m) => {
       const item = inventoryMasterItemByCode(m.item_code) || {};
       return {

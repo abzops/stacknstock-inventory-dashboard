@@ -1448,9 +1448,17 @@ function ticketNoFromMovement(m){
   const match = String(m.notes || '').match(/ISS-\d{4}-\d{4,}/i);
   return match ? match[0].toUpperCase() : (m.work_order ? `WO-${m.work_order}` : `LOG-${m.id}`);
 }
+
+function isIssueLogMovement(m){
+  const type = String(m.movement_type || '').toUpperCase();
+  const docText = [m.ticket_no, m.source_doc_no, m.work_order, m.notes].map((x) => String(x || '')).join(' ');
+  if (type === 'MIV_ISSUE' || /MIV[/-]\d{4}[/-]\d+/i.test(docText)) return false;
+  return ['PRODUCTION_ISSUE', 'PRODUCTION_TICKET_ISSUE'].includes(type);
+}
+
 function issueLogGroups(){
   const map = new Map();
-  for (const m of state.movements) {
+  for (const m of state.movements.filter(isIssueLogMovement)) {
     const no = ticketNoFromMovement(m);
     if (!map.has(no)) map.set(no, { ticket_no: no, movements: [], ticket: state.tickets.find((t) => t.ticket_no === no) });
     map.get(no).movements.push(m);
@@ -1607,7 +1615,7 @@ function returnLogLinesFor(returnId){ return state.returnLogLines.filter((x)=>x.
 function returnExportRows(){ return state.returnLogs.map((r)=>({ ReturnNo:r.return_no, Date:r.return_date, SourceTicket:r.source_ticket_no, ReturnedBy:r.returned_by, ReturnedByEmail:r.returned_by_email, ReceivedBy:r.received_by, TotalQty:r.total_qty, ApprovalMailSent:r.approval_mail_sent ? 'Yes' : 'No', ApprovalMailSentAt:r.approval_mail_sent_at || '', ApprovalMailError:r.approval_mail_error || '', Notes:r.notes })); }
 function issueLogGroups(){
   const map = new Map();
-  const issueMoves = state.movements.filter((m)=>String(m.movement_type || '').toUpperCase() !== 'PRODUCTION_RETURN');
+  const issueMoves = state.movements.filter(isIssueLogMovement);
   for (const m of issueMoves) {
     const no = ticketNoFromMovement(m);
     if (!map.has(no)) map.set(no, { ticket_no: no, movements: [], ticket: state.tickets.find((t) => t.ticket_no === no) });
