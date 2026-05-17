@@ -585,8 +585,9 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
         <label>GRN No<input id="grnNo" required /></label><label>GRN Date<input id="grnDate" type="date" required /></label>
         <label>Supplier<input id="grnSupplier" required /></label><label>PO No<input id="grnPoNo" /></label>
         <label>Invoice No<input id="grnInvoiceNo" /></label><label>Received By<input id="grnReceivedBy" /></label>
-        <label>Item Code<input id="grnItemCode" required /></label><label>Description<input id="grnDescription" /></label>
-        <label>UOM<input id="grnUom" /></label><label>Received Qty<input id="grnReceivedQty" type="number" step="0.01" min="0" required /></label>
+        <label>Item Type<select id="grnItemType" required><option value="">Select type</option><option value="MFG">MFG</option><option value="RM">RM</option><option value="STD">STD</option></select></label><label>Item Code<input id="grnItemCode" required readonly placeholder="Select type to generate" /></label>
+        <label>Description<input id="grnDescription" /></label><label>UOM<input id="grnUom" /></label>
+        <label>Received Qty<input id="grnReceivedQty" type="number" step="0.01" min="0" required /></label>
         <label>Accepted Qty<input id="grnAcceptedQty" type="number" step="0.01" min="0" required /></label><label>Hold Qty<input id="grnHoldQty" type="number" step="0.01" min="0" value="0" /></label>
         <label>Rejected Qty<input id="grnRejectedQty" type="number" step="0.01" min="0" value="0" /></label><label>Putaway Bin<input id="grnPutawayBin" /></label>
         <label>Unit Rate<input id="grnUnitRate" type="number" step="0.01" min="0" value="0" /></label><label>QC Status<select id="grnQcStatus"><option>ACCEPTED</option><option>PENDING</option><option>HOLD</option><option>REJECTED</option></select></label>
@@ -695,7 +696,7 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
 
   <script src="config.js"></script>
   <script src="app.js?v=20260517-login-stack-fix"></script>
-  <script src="v7-module.js?v=20260517-login-stack-fix"></script>
+  <script src="v7-module.js?v=20260517-grn-code-gen"></script>
   <script src="v8-module.js?v=20260517-login-stack-fix"></script>
 </body>
 </html>

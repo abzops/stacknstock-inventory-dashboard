@@ -54,6 +54,52 @@ function nextDocNo(prefix, rows, field) {
   return `${prefix}/${year}/${String(max + 1).padStart(4, "0")}`;
 }
 
+const GRN_ITEM_TYPES = ["MFG", "RM", "STD"];
+
+function collectKnownItemCodes() {
+  const codes = new Set();
+  const add = (code) => {
+    const cleaned = upper(code);
+    if (cleaned) codes.add(cleaned);
+  };
+  (state.inventory || []).forEach((row) => add(row.item_code));
+  (state.grnLines || []).forEach((row) => add(row.item_code));
+  (state.stockLedger || []).forEach((row) => add(row.item_code));
+  (state.mivLines || []).forEach((row) => add(row.item_code));
+  (state.movements || []).forEach((row) => add(row.item_code));
+  (state.deliveryChallanLines || []).forEach((row) => add(row.item_code));
+  (state.jobWorkLines || []).forEach((row) => { add(row.source_item_code); add(row.output_item_code); });
+  (state.wipConversionLines || []).forEach((row) => add(row.input_item_code));
+  (state.wipConversions || []).forEach((row) => add(row.output_item_code));
+  (state.scrapLogs || []).forEach((row) => add(row.item_code));
+  return [...codes];
+}
+
+function nextGeneratedGrnItemCode(type) {
+  const cleanType = upper(type);
+  if (!GRN_ITEM_TYPES.includes(cleanType)) return "";
+  const rx = new RegExp(`^TEMP-${cleanType}-(\\d+)$`);
+  const nextNo = collectKnownItemCodes().reduce((best, code) => {
+    const match = code.match(rx);
+    return Math.max(best, match ? Number(match[1]) : 0);
+  }, 0) + 1;
+  return `TEMP-${cleanType}-${String(nextNo).padStart(4, "0")}`;
+}
+
+function refreshGeneratedGrnItemCode(force = false) {
+  const type = upper($("grnItemType")?.value);
+  const input = $("grnItemCode");
+  if (!input) return "";
+  if (!GRN_ITEM_TYPES.includes(type)) {
+    input.value = "";
+    input.placeholder = "Select MFG / RM / STD";
+    return "";
+  }
+  const generated = nextGeneratedGrnItemCode(type);
+  if (force || !input.value || !upper(input.value).startsWith(`TEMP-${type}-`)) input.value = generated;
+  return upper(input.value);
+}
+
 function normalizeLedger(row) {
   return {
     id: row.id || uid(),
@@ -888,7 +934,6 @@ function setupItemAutofill() {
   refreshMivAvailableItemDropdown();
   refreshIssuedItemDropdown();
   [
-    { inputId: "grnItemCode", descriptionId: "grnDescription", uomId: "grnUom", binId: "grnPutawayBin", supplierId: "grnSupplier" },
     { inputId: "mivItemCode", descriptionId: "mivDescription", uomId: "mivUom", binId: "mivFromBin", qtyId: "mivQtyIssued", source: "available" },
     { inputId: "dcItemCode", descriptionId: "dcDescription", uomId: "dcUom", qtyId: "dcQty", source: "issued" },
     { inputId: "jobWorkSourceItem", descriptionId: "jobWorkSourceDesc", uomId: "jobWorkUom", qtyId: "jobWorkQtySent", source: "issued" },
@@ -957,7 +1002,16 @@ window.removeJobWorkDraftLine = (id) => { state.jobWorkDraftLines = state.jobWor
 window.removeWipDraftLine = (id) => { state.wipDraftLines = state.wipDraftLines.filter((x) => x.id !== id); renderV7DraftLines(); };
 window.removeScrapDraftLine = (id) => { state.scrapDraftLines = state.scrapDraftLines.filter((x) => x.id !== id); renderV7DraftLines(); };
 
-function openGRNModal() { $("grnForm")?.reset(); setV7Msg("grnMessage", "", true); $("grnNo").value = nextDocNo("GRN", state.grns, "grn_no"); $("grnDate").value = todayISO(); $("grnQcStatus").value = "ACCEPTED"; $("grnModal")?.showModal(); }
+function openGRNModal() {
+  $("grnForm")?.reset();
+  setV7Msg("grnMessage", "", true);
+  $("grnNo").value = nextDocNo("GRN", state.grns, "grn_no");
+  $("grnDate").value = todayISO();
+  $("grnQcStatus").value = "ACCEPTED";
+  refreshGeneratedGrnItemCode(true);
+  $("grnModal")?.showModal();
+  setTimeout(() => $("grnItemType")?.focus(), 80);
+}
 function openMIVModal() {
   $("mivForm")?.reset();
   setV7Msg("mivMessage", "", true);
@@ -986,9 +1040,13 @@ async function saveGRN(e) {
     const rejected = v7Num($("grnRejectedQty").value);
     const received = v7Num($("grnReceivedQty").value);
     if (accepted + hold + rejected > received) throw new Error("Accepted + hold + rejected cannot exceed received quantity.");
+    const grnItemType = upper($("grnItemType")?.value);
+    if (!GRN_ITEM_TYPES.includes(grnItemType)) throw new Error("Select item type MFG, RM, or STD before saving GRN.");
+    const generatedItemCode = refreshGeneratedGrnItemCode(true);
+    if (!generatedItemCode) throw new Error("Item code could not be generated. Select item type again.");
     const now = new Date().toISOString();
     const grn = normalizeGrn({ id: uid(), grn_no: $("grnNo").value.trim(), grn_date: $("grnDate").value, po_no: $("grnPoNo").value, supplier: $("grnSupplier").value, invoice_no: $("grnInvoiceNo").value, received_by: $("grnReceivedBy").value, qc_status: $("grnQcStatus").value, remarks: $("grnRemarks").value, created_by: state.user?.id || null, created_by_email: state.user?.email || "", created_at: now, updated_at: now });
-    const line = normalizeGrnLine({ id: uid(), grn_id: grn.id, item_code: $("grnItemCode").value.trim(), description: $("grnDescription").value, uom: $("grnUom").value, received_qty: received, accepted_qty: accepted, hold_qty: hold, rejected_qty: rejected, putaway_bin: $("grnPutawayBin").value, unit_rate: $("grnUnitRate").value, landed_cost: accepted * v7Num($("grnUnitRate").value), qc_status: $("grnQcStatus").value, remarks: $("grnRemarks").value, created_at: now });
+    const line = normalizeGrnLine({ id: uid(), grn_id: grn.id, item_code: generatedItemCode, description: $("grnDescription").value, uom: $("grnUom").value, received_qty: received, accepted_qty: accepted, hold_qty: hold, rejected_qty: rejected, putaway_bin: $("grnPutawayBin").value, unit_rate: $("grnUnitRate").value, landed_cost: accepted * v7Num($("grnUnitRate").value), qc_status: $("grnQcStatus").value, remarks: $("grnRemarks").value, created_at: now });
     state.grns.unshift(grn); state.grnLines.push(line);
     await insertRows("grn_headers", grn); await insertRows("grn_lines", line);
     if (accepted > 0) await postLedgerEntry({ movement_type: "GRN_ACCEPTED", source_doc_type: "GRN", source_doc_no: grn.grn_no, source_line_id: line.id, item_code: line.item_code, description: line.description, uom: line.uom, in_qty: accepted, to_bin: line.putaway_bin, vendor: grn.supplier, unit_cost: line.unit_rate, total_value: line.landed_cost, remarks: grn.remarks });
@@ -1472,6 +1530,7 @@ const v7PreviousBindEvents = bindEvents;
 bindEvents = function() {
   v7PreviousBindEvents();
   setupItemAutofill();
+  $("grnItemType")?.addEventListener("change", () => refreshGeneratedGrnItemCode(true));
   $("openGrnModal")?.addEventListener("click", openGRNModal);
   $("openMivModal")?.addEventListener("click", openMIVModal);
   $("openDcModal")?.addEventListener("click", openDCModal);
