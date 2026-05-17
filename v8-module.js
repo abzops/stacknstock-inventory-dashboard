@@ -32,13 +32,22 @@
     return st || {};
   }
 
+  let resolvingItemByCode = false;
+
   function itemByCodeSafe(code) {
+    const st = getState();
+    const direct = (st.inventory || []).find((x) => up(x.item_code) === up(code));
+    if (direct) return direct;
+    if (resolvingItemByCode) return null;
     try {
+      resolvingItemByCode = true;
       const fn = evalSafe("itemByCode");
       if (typeof fn === "function") return fn(code);
     } catch (_) {}
-    const st = getState();
-    return (st.inventory || []).find((x) => up(x.item_code) === up(code));
+    finally {
+      resolvingItemByCode = false;
+    }
+    return null;
   }
 
   function balanceSafe(code) {

@@ -249,8 +249,10 @@ async function init() {
           return;
         }
         enterApp().catch((err) => {
-          setAuthMessage(errMsg(err));
-          showAuth();
+          const msg = errMsg(err);
+          setAuthMessage(msg);
+          showWorkflowMessage(msg, false);
+          if (!state.user) showAuth();
         });
       }, 0);
     });
@@ -826,11 +828,19 @@ async function handleSignIn(e) {
   if (!state.dbReady) return setAuthMessage("Add Supabase keys in config.js first.");
   state.team = $('teamSelect')?.value || state.team || 'inventory';
   localStorage.setItem('sns_selected_team', state.team);
-  const { data, error } = await state.supabase.auth.signInWithPassword({ email: $("authEmail").value, password: $("authPassword").value });
-  if (error) return setAuthMessage(error.message);
-  state.user = data?.session?.user || data?.user || null;
-  setAuthMessage("Signed in.");
-  await enterApp();
+  setAuthMessage("Signing in...");
+  try {
+    const { data, error } = await state.supabase.auth.signInWithPassword({ email: $("authEmail").value, password: $("authPassword").value });
+    if (error) return setAuthMessage(error.message);
+    state.user = data?.session?.user || data?.user || null;
+    setAuthMessage("Signed in. Loading dashboard...");
+    await enterApp();
+    setAuthMessage("");
+  } catch (err) {
+    const msg = errMsg(err);
+    setAuthMessage(msg);
+    showWorkflowMessage(msg, false);
+  }
 }
 
 async function handleSignUp() {
@@ -961,20 +971,28 @@ function makeTicketNo() {
 }
 
 async function enterApp() {
-  const savedTeam = localStorage.getItem('sns_selected_team');
-  const selectedTeam = $('teamSelect')?.value;
-  state.team = savedTeam || selectedTeam || state.team || 'inventory';
-  if ($('teamSelect')) $('teamSelect').value = state.team;
-  localStorage.setItem('sns_selected_team', state.team);
-  $('authScreen').classList.add('hidden');
-  if (state.team === 'production') {
-    $('appShell').classList.add('hidden');
-    $('productionPortal').classList.remove('hidden');
-  } else {
-    $('productionPortal').classList.add('hidden');
-    $('appShell').classList.remove('hidden');
+  if (state.enterAppPromise) return state.enterAppPromise;
+  state.enterAppPromise = (async () => {
+    const savedTeam = localStorage.getItem('sns_selected_team');
+    const selectedTeam = $('teamSelect')?.value;
+    state.team = savedTeam || selectedTeam || state.team || 'inventory';
+    if ($('teamSelect')) $('teamSelect').value = state.team;
+    localStorage.setItem('sns_selected_team', state.team);
+    $('authScreen').classList.add('hidden');
+    if (state.team === 'production') {
+      $('appShell').classList.add('hidden');
+      $('productionPortal').classList.remove('hidden');
+    } else {
+      $('productionPortal').classList.add('hidden');
+      $('appShell').classList.remove('hidden');
+    }
+    await refreshFromDatabase();
+  })();
+  try {
+    return await state.enterAppPromise;
+  } finally {
+    state.enterAppPromise = null;
   }
-  await refreshFromDatabase();
 }
 
 function showAuth() {

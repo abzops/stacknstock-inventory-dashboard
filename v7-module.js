@@ -561,12 +561,66 @@ persistLocal = function() {
   }));
 };
 
-function itemByCode(code) {
-  return itemLookupRows().find((x) => upper(x.item_code) === upper(code));
-}
-
 function inventoryMasterItemByCode(code) {
   return state.inventory.find((x) => upper(x.item_code) === upper(code));
+}
+
+function normalizeLookupItem(row, source, extra = {}) {
+  const code = upper(row?.item_code || extra.item_code);
+  if (!code) return null;
+  return normalizeItem({
+    id: row?.item_id || row?.id || `lookup-${code}`,
+    item_code: code,
+    description: row?.description || extra.description || "",
+    uom: row?.uom || extra.uom || "",
+    bin: row?.bin || row?.from_bin || row?.putaway_bin || extra.bin || "",
+    qty: calculateItemBalance(code),
+    status: "OK",
+    supplier: row?.supplier || extra.supplier || source || "",
+    part_no: row?.part_no || "",
+    ...extra,
+  });
+}
+
+function itemByCode(code) {
+  const key = upper(code);
+  if (!key) return null;
+
+  const master = inventoryMasterItemByCode(key);
+  if (master) return master;
+
+  const grnLine = (state.grnLines || []).find((line) => upper(line.item_code) === key);
+  if (grnLine) {
+    const grn = (state.grns || []).find((row) => row.id === grnLine.grn_id) || {};
+    return normalizeLookupItem(grnLine, "GRN Register", { supplier: grn.supplier || "", bin: grnLine.putaway_bin || "" });
+  }
+
+  const mivLine = (state.mivLines || []).find((line) => upper(line.item_code) === key);
+  if (mivLine) return normalizeLookupItem(mivLine, "MIV Register", { bin: mivLine.from_bin || "", supplier: "MIV Register" });
+
+  const movement = (state.movements || []).find((row) => upper(row.item_code) === key);
+  if (movement) return normalizeLookupItem(movement, "Issue Logs", { bin: movement.bin || "", supplier: "Issue Logs" });
+
+  const jobLine = (state.jobWorkLines || []).find((line) => upper(line.source_item_code) === key || upper(line.output_item_code) === key);
+  if (jobLine) {
+    const isOutput = upper(jobLine.output_item_code) === key;
+    return normalizeLookupItem({
+      item_code: isOutput ? jobLine.output_item_code : jobLine.source_item_code,
+      description: isOutput ? jobLine.output_description : jobLine.source_description,
+      uom: jobLine.source_uom,
+    }, isOutput ? "Job Work Output" : "Job Work Source");
+  }
+
+  const wipLine = (state.wipConversionLines || []).find((line) => upper(line.input_item_code) === key);
+  if (wipLine) return normalizeLookupItem({ item_code: wipLine.input_item_code, description: wipLine.input_description, uom: wipLine.input_uom }, "WIP Input");
+
+  const wip = (state.wipConversions || []).find((row) => upper(row.output_item_code) === key);
+  if (wip) return normalizeLookupItem({ item_code: wip.output_item_code, description: wip.output_description, uom: wip.output_uom }, "WIP Output");
+
+  const scrap = (state.scrapLogs || []).find((row) => upper(row.item_code) === key);
+  if (scrap) return normalizeLookupItem(scrap, "Scrap Register");
+
+  return null;
 }
 
 function mivAvailableItemRows() {
