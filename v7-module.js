@@ -608,7 +608,7 @@ function movementIssueRows() {
   return state.movements
     .filter((m) => upper(m.movement_type) !== "PRODUCTION_RETURN")
     .map((m) => {
-      const item = itemByCode(m.item_code) || {};
+      const item = inventoryMasterItemByCode(m.item_code) || {};
       return {
         item_id: m.item_id || item.id || "",
         item_code: m.item_code,
@@ -848,6 +848,7 @@ function setupItemAutofill() {
 function setV7Msg(id, message, ok = true) {
   const el = $(id);
   if (el) {
+    if (typeof placeMessageAtTop === "function") placeMessageAtTop(el);
     el.textContent = message;
     el.classList.toggle("hidden", !message);
     el.classList.toggle("success", ok);
@@ -1126,19 +1127,27 @@ async function saveScrap(e) {
 
 const v7BaseIssueLogGroups = issueLogGroups;
 issueLogGroups = function() {
-  const map = new Map();
-  v7BaseIssueLogGroups().forEach((group) => map.set(group.ticket_no, group));
-  state.mivs.forEach((miv) => {
-    const lines = state.mivLines.filter((line) => line.miv_id === miv.id);
-    if (!lines.length) return;
-    const movements = lines.map((line) => normalizeMovement({ id: `miv-${line.id}`, item_id: line.item_id, item_code: line.item_code, description: line.description, bin: line.from_bin, qty_taken: line.qty_issued, qty_before: 0, qty_after: calculateItemBalance(line.item_code), issued_to: miv.issued_to || miv.department || "Production", work_order: miv.work_order || miv.source_ticket_no || "", notes: `MIV ${miv.miv_no}`, movement_type: "MIV_ISSUE", created_at: miv.created_at || miv.miv_date || new Date().toISOString() }));
-    map.set(miv.miv_no, { ticket_no: miv.miv_no, movements, ticket: { ticket_no: miv.miv_no, work_order: miv.work_order, department: miv.department || miv.issued_to, status: miv.status }, source_type: "MIV" });
-  });
-  return [...map.values()].sort((a, b) => new Date(b.movements[0]?.created_at || 0) - new Date(a.movements[0]?.created_at || 0));
+  return v7BaseIssueLogGroups()
+    .filter((group) => !/^MIV[/-]/i.test(String(group.ticket_no || "")))
+    .sort((a, b) => new Date(b.movements[0]?.created_at || 0) - new Date(a.movements[0]?.created_at || 0));
 };
 
+function mivSourceGroups() {
+  return state.mivs.map((miv) => {
+    const lines = state.mivLines.filter((line) => line.miv_id === miv.id);
+    if (!lines.length) return null;
+    const movements = lines.map((line) => normalizeMovement({ id: `miv-${line.id}`, item_id: line.item_id, item_code: line.item_code, description: line.description, bin: line.from_bin, qty_taken: line.qty_issued, qty_before: 0, qty_after: calculateItemBalance(line.item_code), issued_to: miv.issued_to || miv.department || "Production", work_order: miv.work_order || miv.source_ticket_no || "", notes: `MIV ${miv.miv_no}`, movement_type: "MIV_ISSUE", created_at: miv.created_at || miv.miv_date || new Date().toISOString() }));
+    return { ticket_no: miv.miv_no, movements, ticket: { ticket_no: miv.miv_no, work_order: miv.work_order, department: miv.department || miv.issued_to, status: miv.status, received_by: miv.received_by }, source_type: "MIV" };
+  }).filter(Boolean).sort((a, b) => new Date(b.movements[0]?.created_at || 0) - new Date(a.movements[0]?.created_at || 0));
+}
+
+function issueAndMivSourceGroups() {
+  return [...issueLogGroups(), ...mivSourceGroups()]
+    .sort((a, b) => new Date(b.movements[0]?.created_at || 0) - new Date(a.movements[0]?.created_at || 0));
+}
+
 returnSourceOptions = function(selected = "") {
-  const groups = issueLogGroups();
+  const groups = issueAndMivSourceGroups();
   return `<option value="">Select source MIV / issue log</option>` + groups.map((g) => {
     const label = g.source_type === "MIV" ? "MIV Register" : "Issue Log";
     const detail = g.ticket?.work_order || g.movements[0]?.issued_to || "";
@@ -1147,7 +1156,7 @@ returnSourceOptions = function(selected = "") {
 };
 
 aggregateIssueSource = function(ticketNo) {
-  const group = issueLogGroups().find((g) => g.ticket_no === ticketNo);
+  const group = issueAndMivSourceGroups().find((g) => g.ticket_no === ticketNo);
   if (!group) return [];
   const map = new Map();
   for (const m of group.movements) {
@@ -1168,7 +1177,7 @@ function chooseSourceForReturnItem(itemCode) {
   if (!itemCode) return $("returnSourceTicket")?.value || "";
   const current = $("returnSourceTicket")?.value || "";
   if (current && sourceHasReturnItem(current, itemCode)) return current;
-  return issueLogGroups().find((g) => sourceHasReturnItem(g.ticket_no, itemCode))?.ticket_no || current;
+  return issueAndMivSourceGroups().find((g) => sourceHasReturnItem(g.ticket_no, itemCode))?.ticket_no || current;
 }
 
 const v7BaseBuildReturnDraftLines = buildReturnDraftLines;
@@ -1197,6 +1206,13 @@ openReturnModal = function(sourceTicket = "") {
   refreshIssuedItemDropdown();
   v7BaseOpenReturnModal(sourceTicket);
   refreshIssuedItemDropdown();
+  const chosen = sourceTicket || $("returnSourceTicket")?.value || issueAndMivSourceGroups()[0]?.ticket_no || "";
+  if ($("returnSourceTicket")) {
+    $("returnSourceTicket").innerHTML = returnSourceOptions(chosen);
+    $("returnSourceTicket").value = chosen;
+  }
+  buildReturnDraftLines(chosen);
+  renderReturnDraftLines();
 };
 window.openReturnModal = openReturnModal;
 window.openReturnLogBySource = openReturnModal;

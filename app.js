@@ -24,14 +24,15 @@ const dbTimeoutMs = () => Number(window.SNS_DB_TIMEOUT_MS || 12000);
 
 function showWorkflowMessage(message, ok = true) {
   if (!message) return;
-  let region = $("workflowToastRegion");
+  const openDialog = document.querySelector("dialog[open]");
+  const host = openDialog || document.body;
+  let region = host.querySelector(":scope > .workflow-toast-region");
   if (!region) {
     region = document.createElement("div");
-    region.id = "workflowToastRegion";
     region.className = "workflow-toast-region";
     region.setAttribute("aria-live", "polite");
     region.setAttribute("aria-atomic", "true");
-    document.body.appendChild(region);
+    host.prepend(region);
   }
   const toast = document.createElement("div");
   toast.className = `workflow-toast ${ok ? "success" : "error"}`;
@@ -40,9 +41,17 @@ function showWorkflowMessage(message, ok = true) {
   setTimeout(() => toast.remove(), ok ? 4200 : 7000);
 }
 
+function placeMessageAtTop(el) {
+  if (!el) return;
+  const form = el.closest("form");
+  const head = form?.querySelector(".modal-head");
+  if (head && head.nextElementSibling !== el) head.insertAdjacentElement("afterend", el);
+}
+
 function setFormMessage(id, message, ok = true) {
   const el = $(id);
   if (!el) return;
+  placeMessageAtTop(el);
   el.textContent = message || "";
   el.classList.toggle("hidden", !message);
   el.classList.toggle("success", !!ok);
