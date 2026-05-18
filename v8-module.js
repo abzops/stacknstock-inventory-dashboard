@@ -32,13 +32,22 @@
     return st || {};
   }
 
+  let resolvingItemByCode = false;
+
   function itemByCodeSafe(code) {
+    const st = getState();
+    const direct = (st.inventory || []).find((x) => up(x.item_code) === up(code));
+    if (direct) return direct;
+    if (resolvingItemByCode) return null;
     try {
+      resolvingItemByCode = true;
       const fn = evalSafe("itemByCode");
       if (typeof fn === "function") return fn(code);
     } catch (_) {}
-    const st = getState();
-    return (st.inventory || []).find((x) => up(x.item_code) === up(code));
+    finally {
+      resolvingItemByCode = false;
+    }
+    return null;
   }
 
   function balanceSafe(code) {
@@ -250,6 +259,7 @@
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       e.stopImmediatePropagation();
+      call("setSubmitBusy", form, true);
       try {
         const now = new Date().toISOString();
         const code = up($id("mivItemCode")?.value);
@@ -274,6 +284,8 @@
         setTimeout(() => $id("mivModal")?.close(), 250);
       } catch (err) {
         call("setV7Msg", "mivMessage", err.message || String(err), false);
+      } finally {
+        call("setSubmitBusy", form, false);
       }
     }, true);
   }

@@ -14,6 +14,7 @@ Object.assign(state, {
   scrapLogs: [],
   reorderSettingsDb: [],
   itemCostLayers: [],
+  v7PendingDbWrites: [],
   actionQueue: [],
   dcDraftLines: [],
   jobWorkDraftLines: [],
@@ -51,6 +52,52 @@ function nextDocNo(prefix, rows, field) {
     return Math.max(best, match ? Number(match[1]) : 0);
   }, 0);
   return `${prefix}/${year}/${String(max + 1).padStart(4, "0")}`;
+}
+
+const GRN_ITEM_TYPES = ["MFG", "RM", "STD"];
+
+function collectKnownItemCodes() {
+  const codes = new Set();
+  const add = (code) => {
+    const cleaned = upper(code);
+    if (cleaned) codes.add(cleaned);
+  };
+  (state.inventory || []).forEach((row) => add(row.item_code));
+  (state.grnLines || []).forEach((row) => add(row.item_code));
+  (state.stockLedger || []).forEach((row) => add(row.item_code));
+  (state.mivLines || []).forEach((row) => add(row.item_code));
+  (state.movements || []).forEach((row) => add(row.item_code));
+  (state.deliveryChallanLines || []).forEach((row) => add(row.item_code));
+  (state.jobWorkLines || []).forEach((row) => { add(row.source_item_code); add(row.output_item_code); });
+  (state.wipConversionLines || []).forEach((row) => add(row.input_item_code));
+  (state.wipConversions || []).forEach((row) => add(row.output_item_code));
+  (state.scrapLogs || []).forEach((row) => add(row.item_code));
+  return [...codes];
+}
+
+function nextGeneratedGrnItemCode(type) {
+  const cleanType = upper(type);
+  if (!GRN_ITEM_TYPES.includes(cleanType)) return "";
+  const rx = new RegExp(`^TEMP-${cleanType}-(\\d+)$`);
+  const nextNo = collectKnownItemCodes().reduce((best, code) => {
+    const match = code.match(rx);
+    return Math.max(best, match ? Number(match[1]) : 0);
+  }, 0) + 1;
+  return `TEMP-${cleanType}-${String(nextNo).padStart(4, "0")}`;
+}
+
+function refreshGeneratedGrnItemCode(force = false) {
+  const type = upper($("grnItemType")?.value);
+  const input = $("grnItemCode");
+  if (!input) return "";
+  if (!GRN_ITEM_TYPES.includes(type)) {
+    input.value = "";
+    input.placeholder = "Select MFG / RM / STD";
+    return "";
+  }
+  const generated = nextGeneratedGrnItemCode(type);
+  if (force || !input.value || !upper(input.value).startsWith(`TEMP-${type}-`)) input.value = generated;
+  return upper(input.value);
 }
 
 function normalizeLedger(row) {
@@ -373,15 +420,51 @@ function ensureInventoryItem({ item_code, description = "", uom = "", supplier =
 async function insertRows(table, rows) {
   const list = Array.isArray(rows) ? rows : [rows];
   if (!state.dbReady || !state.user || !list.length) return;
-  const { error } = await state.supabase.from(table).insert(list);
-  if (error) throw new Error(`${table} save failed: ${error.message}`);
+  queueV7DbSync({ method: "insert", table, rows: list, label: `${table} save` });
 }
 
 async function upsertRows(table, rows) {
   const list = Array.isArray(rows) ? rows : [rows];
   if (!state.dbReady || !state.user || !list.length) return;
-  const { error } = await state.supabase.from(table).upsert(list);
-  if (error) throw new Error(`${table} save failed: ${error.message}`);
+  queueV7DbSync({ method: "upsert", table, rows: list, label: `${table} save` });
+}
+
+function queueV7DbSync(write, fromRetry = false) {
+  const safeWrite = {
+    id: write.id || uid(),
+    method: write.method,
+    table: write.table,
+    rows: JSON.parse(JSON.stringify(write.rows || [])),
+    label: write.label || `${write.table} sync`,
+    created_at: write.created_at || new Date().toISOString(),
+  };
+  const request = state.supabase.from(safeWrite.table)[safeWrite.method](safeWrite.rows);
+  const sync = typeof withDbTimeout === "function" ? withDbTimeout(request, safeWrite.label) : request;
+  Promise.resolve(sync)
+    .then((res) => {
+      if (res?.error) throw new Error(res.error.message || String(res.error));
+      if (fromRetry) {
+        state.v7PendingDbWrites = (state.v7PendingDbWrites || []).filter((x) => x.id !== safeWrite.id);
+        persistLocal();
+      }
+    })
+    .catch((err) => {
+      console.warn(`${safeWrite.label} sync failed`, err);
+      if (!fromRetry && !(state.v7PendingDbWrites || []).some((x) => x.id === safeWrite.id)) {
+        state.v7PendingDbWrites = [...(state.v7PendingDbWrites || []), safeWrite];
+        persistLocal();
+      }
+      const now = Date.now();
+      if (!state.lastV7DbSyncWarningAt || now - state.lastV7DbSyncWarningAt > 6000) {
+        state.lastV7DbSyncWarningAt = now;
+        if (typeof showWorkflowMessage === "function") showWorkflowMessage("Saved locally. Database sync is queued and will retry automatically.", true);
+      }
+    });
+}
+
+function flushV7DbSyncQueue() {
+  if (!state.dbReady || !state.user || !(state.v7PendingDbWrites || []).length) return;
+  for (const write of [...state.v7PendingDbWrites]) queueV7DbSync(write, true);
 }
 
 async function postLedgerEntry(entry) {
@@ -421,7 +504,9 @@ async function postLedgerEntry(entry) {
   if (row.to_bin) item.bin = row.to_bin;
   persistLocal();
   await insertRows("stock_ledger", row);
-  if (state.dbReady && state.user) await state.supabase.from("inventory_items").upsert(item);
+  if (state.dbReady && state.user) {
+    queueV7DbSync({ method: "upsert", table: "inventory_items", rows: [item], label: "Inventory balance update" });
+  }
   return row;
 }
 
@@ -453,6 +538,7 @@ loadData = async function() {
     state.scrapLogs = (cached.scrapLogs || []).map(normalizeScrap);
     state.reorderSettingsDb = (cached.reorderSettingsDb || []).map(normalizeReorderDb);
     state.itemCostLayers = (cached.itemCostLayers || []).map(normalizeCostLayer);
+    state.v7PendingDbWrites = cached.v7PendingDbWrites || [];
   };
   if (!state.dbReady || !state.user) {
     loadCached();
@@ -490,6 +576,7 @@ loadData = async function() {
     loadCached();
   }
   recalculateInventoryBalances();
+  flushV7DbSyncQueue();
 };
 
 persistLocal = function() {
@@ -516,15 +603,70 @@ persistLocal = function() {
     scrapLogs: state.scrapLogs,
     reorderSettingsDb: state.reorderSettingsDb,
     itemCostLayers: state.itemCostLayers,
+    v7PendingDbWrites: state.v7PendingDbWrites || [],
   }));
 };
 
-function itemByCode(code) {
-  return itemLookupRows().find((x) => upper(x.item_code) === upper(code));
-}
-
 function inventoryMasterItemByCode(code) {
   return state.inventory.find((x) => upper(x.item_code) === upper(code));
+}
+
+function normalizeLookupItem(row, source, extra = {}) {
+  const code = upper(row?.item_code || extra.item_code);
+  if (!code) return null;
+  return normalizeItem({
+    id: row?.item_id || row?.id || `lookup-${code}`,
+    item_code: code,
+    description: row?.description || extra.description || "",
+    uom: row?.uom || extra.uom || "",
+    bin: row?.bin || row?.from_bin || row?.putaway_bin || extra.bin || "",
+    qty: calculateItemBalance(code),
+    status: "OK",
+    supplier: row?.supplier || extra.supplier || source || "",
+    part_no: row?.part_no || "",
+    ...extra,
+  });
+}
+
+function itemByCode(code) {
+  const key = upper(code);
+  if (!key) return null;
+
+  const master = inventoryMasterItemByCode(key);
+  if (master) return master;
+
+  const grnLine = (state.grnLines || []).find((line) => upper(line.item_code) === key);
+  if (grnLine) {
+    const grn = (state.grns || []).find((row) => row.id === grnLine.grn_id) || {};
+    return normalizeLookupItem(grnLine, "GRN Register", { supplier: grn.supplier || "", bin: grnLine.putaway_bin || "" });
+  }
+
+  const mivLine = (state.mivLines || []).find((line) => upper(line.item_code) === key);
+  if (mivLine) return normalizeLookupItem(mivLine, "MIV Register", { bin: mivLine.from_bin || "", supplier: "MIV Register" });
+
+  const movement = (state.movements || []).find((row) => upper(row.item_code) === key);
+  if (movement) return normalizeLookupItem(movement, "Issue Logs", { bin: movement.bin || "", supplier: "Issue Logs" });
+
+  const jobLine = (state.jobWorkLines || []).find((line) => upper(line.source_item_code) === key || upper(line.output_item_code) === key);
+  if (jobLine) {
+    const isOutput = upper(jobLine.output_item_code) === key;
+    return normalizeLookupItem({
+      item_code: isOutput ? jobLine.output_item_code : jobLine.source_item_code,
+      description: isOutput ? jobLine.output_description : jobLine.source_description,
+      uom: jobLine.source_uom,
+    }, isOutput ? "Job Work Output" : "Job Work Source");
+  }
+
+  const wipLine = (state.wipConversionLines || []).find((line) => upper(line.input_item_code) === key);
+  if (wipLine) return normalizeLookupItem({ item_code: wipLine.input_item_code, description: wipLine.input_description, uom: wipLine.input_uom }, "WIP Input");
+
+  const wip = (state.wipConversions || []).find((row) => upper(row.output_item_code) === key);
+  if (wip) return normalizeLookupItem({ item_code: wip.output_item_code, description: wip.output_description, uom: wip.output_uom }, "WIP Output");
+
+  const scrap = (state.scrapLogs || []).find((row) => upper(row.item_code) === key);
+  if (scrap) return normalizeLookupItem(scrap, "Scrap Register");
+
+  return null;
 }
 
 function mivAvailableItemRows() {
@@ -564,9 +706,9 @@ function mivIssueRows() {
 
 function movementIssueRows() {
   return state.movements
-    .filter((m) => upper(m.movement_type) !== "PRODUCTION_RETURN")
+    .filter((m) => typeof isIssueLogMovement === "function" ? isIssueLogMovement(m) : ["PRODUCTION_ISSUE", "PRODUCTION_TICKET_ISSUE"].includes(upper(m.movement_type)))
     .map((m) => {
-      const item = itemByCode(m.item_code) || {};
+      const item = inventoryMasterItemByCode(m.item_code) || {};
       return {
         item_id: m.item_id || item.id || "",
         item_code: m.item_code,
@@ -792,7 +934,6 @@ function setupItemAutofill() {
   refreshMivAvailableItemDropdown();
   refreshIssuedItemDropdown();
   [
-    { inputId: "grnItemCode", descriptionId: "grnDescription", uomId: "grnUom", binId: "grnPutawayBin", supplierId: "grnSupplier" },
     { inputId: "mivItemCode", descriptionId: "mivDescription", uomId: "mivUom", binId: "mivFromBin", qtyId: "mivQtyIssued", source: "available" },
     { inputId: "dcItemCode", descriptionId: "dcDescription", uomId: "dcUom", qtyId: "dcQty", source: "issued" },
     { inputId: "jobWorkSourceItem", descriptionId: "jobWorkSourceDesc", uomId: "jobWorkUom", qtyId: "jobWorkQtySent", source: "issued" },
@@ -805,9 +946,14 @@ function setupItemAutofill() {
 
 function setV7Msg(id, message, ok = true) {
   const el = $(id);
-  if (!el) return;
-  el.textContent = message;
-  el.classList.toggle("success", ok);
+  if (el) {
+    if (typeof placeMessageAtTop === "function") placeMessageAtTop(el);
+    el.textContent = message;
+    el.classList.toggle("hidden", !message);
+    el.classList.toggle("success", ok);
+    el.classList.toggle("error", !ok && !!message);
+  }
+  if (message && typeof showWorkflowMessage === "function" && !/^Saving\b/i.test(message)) showWorkflowMessage(message, ok);
 }
 
 function renderV7DraftLines() {
@@ -856,9 +1002,19 @@ window.removeJobWorkDraftLine = (id) => { state.jobWorkDraftLines = state.jobWor
 window.removeWipDraftLine = (id) => { state.wipDraftLines = state.wipDraftLines.filter((x) => x.id !== id); renderV7DraftLines(); };
 window.removeScrapDraftLine = (id) => { state.scrapDraftLines = state.scrapDraftLines.filter((x) => x.id !== id); renderV7DraftLines(); };
 
-function openGRNModal() { $("grnForm")?.reset(); $("grnNo").value = nextDocNo("GRN", state.grns, "grn_no"); $("grnDate").value = todayISO(); $("grnQcStatus").value = "ACCEPTED"; $("grnModal")?.showModal(); }
+function openGRNModal() {
+  $("grnForm")?.reset();
+  setV7Msg("grnMessage", "", true);
+  $("grnNo").value = nextDocNo("GRN", state.grns, "grn_no");
+  $("grnDate").value = todayISO();
+  $("grnQcStatus").value = "ACCEPTED";
+  refreshGeneratedGrnItemCode(true);
+  $("grnModal")?.showModal();
+  setTimeout(() => $("grnItemType")?.focus(), 80);
+}
 function openMIVModal() {
   $("mivForm")?.reset();
+  setV7Msg("mivMessage", "", true);
   refreshMivAvailableItemDropdown();
   $("mivNo").value = nextDocNo("MIV", state.mivs, "miv_no");
   $("mivDate").value = todayISO();
@@ -868,22 +1024,29 @@ function openMIVModal() {
   $("mivModal")?.showModal();
   setTimeout(() => $("mivItemCode")?.focus(), 80);
 }
-function openDCModal() { $("dcForm")?.reset(); state.dcDraftLines = []; renderV7DraftLines(); $("dcNo").value = nextDocNo("DC/JW", state.deliveryChallans, "dc_no"); $("dcDate").value = todayISO(); $("dcStatus").value = "OPEN"; $("dcModal")?.showModal(); }
-function openJobWorkModal() { $("jobWorkForm")?.reset(); state.jobWorkDraftLines = []; renderV7DraftLines(); $("jobWorkNo").value = nextDocNo("JW", state.jobWorks, "job_work_no"); $("jobWorkDateSent").value = todayISO(); $("jobWorkExpectedReturn").value = todayISO(); $("jobWorkModal")?.showModal(); }
-function openWIPModal() { $("wipForm")?.reset(); state.wipDraftLines = []; renderV7DraftLines(); $("wipNo").value = nextDocNo("WIP", state.wipConversions, "wip_no"); $("wipStartDate").value = todayISO(); $("wipModal")?.showModal(); }
-function openScrapModal() { $("scrapForm")?.reset(); state.scrapDraftLines = []; renderV7DraftLines(); $("scrapNo").value = nextDocNo("SCR", state.scrapLogs, "scrap_no"); $("scrapDate").value = todayISO(); $("scrapModal")?.showModal(); }
+function openDCModal() { $("dcForm")?.reset(); setV7Msg("dcMessage", "", true); state.dcDraftLines = []; renderV7DraftLines(); $("dcNo").value = nextDocNo("DC/JW", state.deliveryChallans, "dc_no"); $("dcDate").value = todayISO(); $("dcStatus").value = "OPEN"; $("dcModal")?.showModal(); }
+function openJobWorkModal() { $("jobWorkForm")?.reset(); setV7Msg("jobWorkMessage", "", true); state.jobWorkDraftLines = []; renderV7DraftLines(); $("jobWorkNo").value = nextDocNo("JW", state.jobWorks, "job_work_no"); $("jobWorkDateSent").value = todayISO(); $("jobWorkExpectedReturn").value = todayISO(); $("jobWorkModal")?.showModal(); }
+function openWIPModal() { $("wipForm")?.reset(); setV7Msg("wipMessage", "", true); state.wipDraftLines = []; renderV7DraftLines(); $("wipNo").value = nextDocNo("WIP", state.wipConversions, "wip_no"); $("wipStartDate").value = todayISO(); $("wipModal")?.showModal(); }
+function openScrapModal() { $("scrapForm")?.reset(); setV7Msg("scrapMessage", "", true); state.scrapDraftLines = []; renderV7DraftLines(); $("scrapNo").value = nextDocNo("SCR", state.scrapLogs, "scrap_no"); $("scrapDate").value = todayISO(); $("scrapModal")?.showModal(); }
 
 async function saveGRN(e) {
   e.preventDefault();
+  const form = e.currentTarget;
+  setSubmitBusy?.(form, true);
+  setV7Msg("grnMessage", "Saving GRN...", true);
   try {
     const accepted = v7Num($("grnAcceptedQty").value);
     const hold = v7Num($("grnHoldQty").value);
     const rejected = v7Num($("grnRejectedQty").value);
     const received = v7Num($("grnReceivedQty").value);
     if (accepted + hold + rejected > received) throw new Error("Accepted + hold + rejected cannot exceed received quantity.");
+    const grnItemType = upper($("grnItemType")?.value);
+    if (!GRN_ITEM_TYPES.includes(grnItemType)) throw new Error("Select item type MFG, RM, or STD before saving GRN.");
+    const generatedItemCode = refreshGeneratedGrnItemCode(true);
+    if (!generatedItemCode) throw new Error("Item code could not be generated. Select item type again.");
     const now = new Date().toISOString();
     const grn = normalizeGrn({ id: uid(), grn_no: $("grnNo").value.trim(), grn_date: $("grnDate").value, po_no: $("grnPoNo").value, supplier: $("grnSupplier").value, invoice_no: $("grnInvoiceNo").value, received_by: $("grnReceivedBy").value, qc_status: $("grnQcStatus").value, remarks: $("grnRemarks").value, created_by: state.user?.id || null, created_by_email: state.user?.email || "", created_at: now, updated_at: now });
-    const line = normalizeGrnLine({ id: uid(), grn_id: grn.id, item_code: $("grnItemCode").value.trim(), description: $("grnDescription").value, uom: $("grnUom").value, received_qty: received, accepted_qty: accepted, hold_qty: hold, rejected_qty: rejected, putaway_bin: $("grnPutawayBin").value, unit_rate: $("grnUnitRate").value, landed_cost: accepted * v7Num($("grnUnitRate").value), qc_status: $("grnQcStatus").value, remarks: $("grnRemarks").value, created_at: now });
+    const line = normalizeGrnLine({ id: uid(), grn_id: grn.id, item_code: generatedItemCode, description: $("grnDescription").value, uom: $("grnUom").value, received_qty: received, accepted_qty: accepted, hold_qty: hold, rejected_qty: rejected, putaway_bin: $("grnPutawayBin").value, unit_rate: $("grnUnitRate").value, landed_cost: accepted * v7Num($("grnUnitRate").value), qc_status: $("grnQcStatus").value, remarks: $("grnRemarks").value, created_at: now });
     state.grns.unshift(grn); state.grnLines.push(line);
     await insertRows("grn_headers", grn); await insertRows("grn_lines", line);
     if (accepted > 0) await postLedgerEntry({ movement_type: "GRN_ACCEPTED", source_doc_type: "GRN", source_doc_no: grn.grn_no, source_line_id: line.id, item_code: line.item_code, description: line.description, uom: line.uom, in_qty: accepted, to_bin: line.putaway_bin, vendor: grn.supplier, unit_cost: line.unit_rate, total_value: line.landed_cost, remarks: grn.remarks });
@@ -894,6 +1057,7 @@ async function saveGRN(e) {
     }
     persistLocal(); renderAll(); setV7Msg("grnMessage", `GRN ${grn.grn_no} saved.`); setTimeout(() => $("grnModal")?.close(), 250);
   } catch (err) { setV7Msg("grnMessage", err.message, false); }
+  finally { setSubmitBusy?.(form, false); }
 }
 
 async function createMIV(header, lines) {
@@ -925,8 +1089,16 @@ async function createMIV(header, lines) {
     state.mivs = state.mivs.filter((x) => x.id !== header.id);
     state.mivLines = state.mivLines.filter((x) => x.miv_id !== header.id);
     if (state.dbReady && state.user) {
-      try { await state.supabase.from("miv_lines").delete().eq("miv_id", header.id); } catch (_) {}
-      try { await state.supabase.from("miv_headers").delete().eq("id", header.id); } catch (_) {}
+      try {
+        const lineDelete = state.supabase.from("miv_lines").delete().eq("miv_id", header.id);
+        if (typeof withDbTimeout === "function") await withDbTimeout(lineDelete, "MIV rollback line delete");
+        else await lineDelete;
+      } catch (_) {}
+      try {
+        const headerDelete = state.supabase.from("miv_headers").delete().eq("id", header.id);
+        if (typeof withDbTimeout === "function") await withDbTimeout(headerDelete, "MIV rollback header delete");
+        else await headerDelete;
+      } catch (_) {}
     }
     persistLocal();
     throw err;
@@ -937,6 +1109,8 @@ async function createMIV(header, lines) {
 
 async function saveMIV(e) {
   e.preventDefault();
+  const form = e.currentTarget;
+  setSubmitBusy?.(form, true);
   try {
     const code = upper($("mivItemCode").value);
     const item = mivAvailableItemByCode(code);
@@ -958,11 +1132,14 @@ async function saveMIV(e) {
     setV7Msg("mivMessage", `MIV ${header.miv_no} saved.`);
     setTimeout(() => $("mivModal")?.close(), 250);
   } catch (err) { setV7Msg("mivMessage", err.message, false); }
+  finally { setSubmitBusy?.(form, false); }
 }
 
 
 async function saveDeliveryChallan(e) {
   e.preventDefault();
+  const form = e.currentTarget;
+  setSubmitBusy?.(form, true);
   try {
     const now = new Date().toISOString();
     const fallbackValue = v7Num($("dcQty").value) * v7Num($("dcRate").value);
@@ -976,10 +1153,13 @@ async function saveDeliveryChallan(e) {
     await insertRows("delivery_challans", dc); await insertRows("delivery_challan_lines", lines);
     state.dcDraftLines = []; persistLocal(); renderAll(); setV7Msg("dcMessage", `Delivery challan ${dc.dc_no} saved with ${lines.length} line(s).`); setTimeout(() => $("dcModal")?.close(), 250);
   } catch (err) { setV7Msg("dcMessage", err.message, false); }
+  finally { setSubmitBusy?.(form, false); }
 }
 
 async function saveJobWork(e) {
   e.preventDefault();
+  const form = e.currentTarget;
+  setSubmitBusy?.(form, true);
   try {
     const now = new Date().toISOString();
     const fallbackLine = normalizeJobWorkLine({ id: uid(), source_item_code: $("jobWorkSourceItem").value.trim(), source_description: $("jobWorkSourceDesc").value, source_uom: $("jobWorkUom").value, qty_sent: $("jobWorkQtySent").value, output_item_code: $("jobWorkOutputItem").value.trim(), output_description: $("jobWorkOutputDesc").value, qty_received: $("jobWorkQtyReceived").value, wastage_qty: $("jobWorkWastage").value, qc_status: v7Num($("jobWorkQtyReceived").value) > 0 ? "ACCEPTED" : "PENDING", remarks: $("jobWorkRemarks").value, created_at: now });
@@ -1009,10 +1189,13 @@ async function saveJobWork(e) {
     }
     state.jobWorkDraftLines = []; persistLocal(); renderAll(); setV7Msg("jobWorkMessage", `Job work ${job.job_work_no} saved with ${lines.length} line(s).`); setTimeout(() => $("jobWorkModal")?.close(), 250);
   } catch (err) { setV7Msg("jobWorkMessage", err.message, false); }
+  finally { setSubmitBusy?.(form, false); }
 }
 
 async function saveWIPConversion(e) {
   e.preventDefault();
+  const form = e.currentTarget;
+  setSubmitBusy?.(form, true);
   try {
     const now = new Date().toISOString();
     const fallbackValue = v7Num($("wipQtyUsed").value) * v7Num($("wipUnitCost").value);
@@ -1031,10 +1214,13 @@ async function saveWIPConversion(e) {
     await addCostLayer({ item_code: wip.output_item_code, source_doc_type: "WIP", source_doc_no: wip.wip_no, qty: wip.output_qty, unit_cost: wip.output_qty ? totalValue / wip.output_qty : 0, total_value: totalValue });
     state.wipDraftLines = []; persistLocal(); renderAll(); setV7Msg("wipMessage", `WIP ${wip.wip_no} saved with ${lines.length} input line(s).`); setTimeout(() => $("wipModal")?.close(), 250);
   } catch (err) { setV7Msg("wipMessage", err.message, false); }
+  finally { setSubmitBusy?.(form, false); }
 }
 
 async function saveScrap(e) {
   e.preventDefault();
+  const form = e.currentTarget;
+  setSubmitBusy?.(form, true);
   try {
     const now = new Date().toISOString();
     const baseNo = $("scrapNo").value.trim();
@@ -1048,23 +1234,32 @@ async function saveScrap(e) {
     for (const scrap of scraps) await postLedgerEntry({ movement_type: "SCRAP", source_doc_type: scrap.source_doc_type || "SCRAP", source_doc_no: scrap.scrap_no, item_code: scrap.item_code, description: scrap.description, uom: scrap.uom, out_qty: scrap.qty_scrapped, total_value: scrap.scrap_value, remarks: scrap.reason });
     state.scrapDraftLines = []; persistLocal(); renderAll(); setV7Msg("scrapMessage", `Scrap ${baseNo} saved with ${scraps.length} line(s).`); setTimeout(() => $("scrapModal")?.close(), 250);
   } catch (err) { setV7Msg("scrapMessage", err.message, false); }
+  finally { setSubmitBusy?.(form, false); }
 }
 
 const v7BaseIssueLogGroups = issueLogGroups;
 issueLogGroups = function() {
-  const map = new Map();
-  v7BaseIssueLogGroups().forEach((group) => map.set(group.ticket_no, group));
-  state.mivs.forEach((miv) => {
-    const lines = state.mivLines.filter((line) => line.miv_id === miv.id);
-    if (!lines.length) return;
-    const movements = lines.map((line) => normalizeMovement({ id: `miv-${line.id}`, item_id: line.item_id, item_code: line.item_code, description: line.description, bin: line.from_bin, qty_taken: line.qty_issued, qty_before: 0, qty_after: calculateItemBalance(line.item_code), issued_to: miv.issued_to || miv.department || "Production", work_order: miv.work_order || miv.source_ticket_no || "", notes: `MIV ${miv.miv_no}`, movement_type: "MIV_ISSUE", created_at: miv.created_at || miv.miv_date || new Date().toISOString() }));
-    map.set(miv.miv_no, { ticket_no: miv.miv_no, movements, ticket: { ticket_no: miv.miv_no, work_order: miv.work_order, department: miv.department || miv.issued_to, status: miv.status }, source_type: "MIV" });
-  });
-  return [...map.values()].sort((a, b) => new Date(b.movements[0]?.created_at || 0) - new Date(a.movements[0]?.created_at || 0));
+  return v7BaseIssueLogGroups()
+    .filter((group) => !/^MIV[/-]/i.test(String(group.ticket_no || "")))
+    .sort((a, b) => new Date(b.movements[0]?.created_at || 0) - new Date(a.movements[0]?.created_at || 0));
 };
 
+function mivSourceGroups() {
+  return state.mivs.map((miv) => {
+    const lines = state.mivLines.filter((line) => line.miv_id === miv.id);
+    if (!lines.length) return null;
+    const movements = lines.map((line) => normalizeMovement({ id: `miv-${line.id}`, item_id: line.item_id, item_code: line.item_code, description: line.description, bin: line.from_bin, qty_taken: line.qty_issued, qty_before: 0, qty_after: calculateItemBalance(line.item_code), issued_to: miv.issued_to || miv.department || "Production", work_order: miv.work_order || miv.source_ticket_no || "", notes: `MIV ${miv.miv_no}`, movement_type: "MIV_ISSUE", created_at: miv.created_at || miv.miv_date || new Date().toISOString() }));
+    return { ticket_no: miv.miv_no, movements, ticket: { ticket_no: miv.miv_no, work_order: miv.work_order, department: miv.department || miv.issued_to, status: miv.status, received_by: miv.received_by }, source_type: "MIV" };
+  }).filter(Boolean).sort((a, b) => new Date(b.movements[0]?.created_at || 0) - new Date(a.movements[0]?.created_at || 0));
+}
+
+function issueAndMivSourceGroups() {
+  return [...issueLogGroups(), ...mivSourceGroups()]
+    .sort((a, b) => new Date(b.movements[0]?.created_at || 0) - new Date(a.movements[0]?.created_at || 0));
+}
+
 returnSourceOptions = function(selected = "") {
-  const groups = issueLogGroups();
+  const groups = issueAndMivSourceGroups();
   return `<option value="">Select source MIV / issue log</option>` + groups.map((g) => {
     const label = g.source_type === "MIV" ? "MIV Register" : "Issue Log";
     const detail = g.ticket?.work_order || g.movements[0]?.issued_to || "";
@@ -1073,7 +1268,7 @@ returnSourceOptions = function(selected = "") {
 };
 
 aggregateIssueSource = function(ticketNo) {
-  const group = issueLogGroups().find((g) => g.ticket_no === ticketNo);
+  const group = issueAndMivSourceGroups().find((g) => g.ticket_no === ticketNo);
   if (!group) return [];
   const map = new Map();
   for (const m of group.movements) {
@@ -1094,7 +1289,7 @@ function chooseSourceForReturnItem(itemCode) {
   if (!itemCode) return $("returnSourceTicket")?.value || "";
   const current = $("returnSourceTicket")?.value || "";
   if (current && sourceHasReturnItem(current, itemCode)) return current;
-  return issueLogGroups().find((g) => sourceHasReturnItem(g.ticket_no, itemCode))?.ticket_no || current;
+  return issueAndMivSourceGroups().find((g) => sourceHasReturnItem(g.ticket_no, itemCode))?.ticket_no || current;
 }
 
 const v7BaseBuildReturnDraftLines = buildReturnDraftLines;
@@ -1123,6 +1318,13 @@ openReturnModal = function(sourceTicket = "") {
   refreshIssuedItemDropdown();
   v7BaseOpenReturnModal(sourceTicket);
   refreshIssuedItemDropdown();
+  const chosen = sourceTicket || $("returnSourceTicket")?.value || issueAndMivSourceGroups()[0]?.ticket_no || "";
+  if ($("returnSourceTicket")) {
+    $("returnSourceTicket").innerHTML = returnSourceOptions(chosen);
+    $("returnSourceTicket").value = chosen;
+  }
+  buildReturnDraftLines(chosen);
+  renderReturnDraftLines();
 };
 window.openReturnModal = openReturnModal;
 window.openReturnLogBySource = openReturnModal;
@@ -1147,13 +1349,27 @@ openItemModal = function(item = null) {
 
 handleItemSubmit = async function(e) {
   e.preventDefault();
-  const isNew = !$("itemId").value;
-  const openingQty = v7Num($("qty").value);
-  const item = normalizeItem({ id: $("itemId").value || uid(), supplier: $("supplier").value, item_code: $("itemCode").value, description: $("description").value, uom: $("uom").value, qty: isNew ? 0 : calculateItemBalance($("itemCode").value), status: $("status").value, bin: $("bin").value, part_no: $("partNo").value });
-  await saveItem(item);
-  if (isNew && openingQty > 0) await postLedgerEntry({ movement_type: "OPENING_STOCK", source_doc_type: "OPENING", source_doc_no: `OPEN-${item.item_code}`, item_id: item.id, item_code: item.item_code, description: item.description, uom: item.uom, in_qty: openingQty, to_bin: item.bin, remarks: "Opening stock from item creation" });
-  $("itemModal").close();
-  renderAll();
+  const form = e.currentTarget;
+  setSubmitBusy?.(form, true);
+  setFormMessage?.("itemMessage", "Saving item...", true);
+  try {
+    const isNew = !$("itemId").value;
+    const openingQty = v7Num($("qty").value);
+    const item = normalizeItem({ id: $("itemId").value || uid(), supplier: $("supplier").value, item_code: $("itemCode").value, description: $("description").value, uom: $("uom").value, qty: isNew ? 0 : calculateItemBalance($("itemCode").value), status: $("status").value, bin: $("bin").value, part_no: $("partNo").value });
+    await saveItem(item);
+    if (isNew && openingQty > 0) await postLedgerEntry({ movement_type: "OPENING_STOCK", source_doc_type: "OPENING", source_doc_no: `OPEN-${item.item_code}`, item_id: item.id, item_code: item.item_code, description: item.description, uom: item.uom, in_qty: openingQty, to_bin: item.bin, remarks: "Opening stock from item creation" });
+    renderAll();
+    const msg = `Success: ${item.item_code} saved${isNew && openingQty > 0 ? " and opening stock posted" : ""}.`;
+    setFormMessage?.("itemMessage", msg, true);
+    if (typeof showWorkflowMessage === "function") showWorkflowMessage(msg, true);
+    closeDialogAfterSuccess?.("itemModal");
+  } catch (err) {
+    const msg = errMsg?.(err) || err.message || String(err);
+    setFormMessage?.("itemMessage", msg, false);
+    if (typeof showWorkflowMessage === "function") showWorkflowMessage(msg, false);
+  } finally {
+    setSubmitBusy?.(form, false);
+  }
 };
 
 window.issueTicket = async function(ticketId) {
@@ -1172,12 +1388,18 @@ window.issueTicket = async function(ticketId) {
     for (const line of lines) line.qty_issued = v7Num(line.qty_requested);
     ticket.status = "ISSUED"; ticket.issued_by = state.user?.email || "Stores"; ticket.issued_at = now; ticket.updated_at = now;
     if (state.dbReady) {
-      await state.supabase.from("stock_movements").insert(movements);
-      for (const line of lines) await state.supabase.from("material_issue_ticket_lines").upsert(line);
-      await state.supabase.from("material_issue_tickets").upsert(dbSafeTicket(ticket));
+      const movementInsert = state.supabase.from("stock_movements").insert(movements);
+      if (typeof withDbTimeout === "function") await withDbTimeout(movementInsert, "Ticket movement save");
+      else await movementInsert;
+      for (const line of lines) await upsertRows("material_issue_ticket_lines", line);
+      await upsertRows("material_issue_tickets", dbSafeTicket(ticket));
     }
     persistLocal(); renderAll(); window.printMIV?.(header.id);
-  } catch (err) { alert(err.message || "Issue failed."); }
+  } catch (err) {
+    const msg = err.message || "Issue failed.";
+    if (typeof showWorkflowMessage === "function") showWorkflowMessage(msg, false);
+    else alert(msg);
+  }
 };
 
 function buildActionQueue() {
@@ -1276,11 +1498,261 @@ renderAll = function() {
   }
 };
 
-window.printGRN = () => window.print();
-window.printMIV = () => window.print();
-window.printDeliveryChallan = () => window.print();
-window.printJobWork = () => window.print();
-window.printWIP = () => window.print();
+function printV7Document(title, subtitle, meta, headers, rows, signatures) {
+  openPrintDocument(title, subtitle, `${printMetaGrid(meta)}${printTable(headers, rows)}${printSignatures(signatures)}`);
+}
+
+function grnStoreLabel(grn, line) {
+  return `<section class="store-label"><h2>RECEIVING / STORE LABEL</h2>${printMetaGrid([
+    ["Part No.", line.item_code],
+    ["Description", line.description],
+    ["Qty", moneyish(line.accepted_qty || line.received_qty)],
+    ["UOM", line.uom],
+    ["Supplier", grn.supplier],
+    ["PO Ref", grn.po_no],
+    ["GRN No.", grn.grn_no],
+    ["Date Received", printDate(grn.grn_date)],
+    ["Supplier Lot/Batch", grn.invoice_no || "NA"],
+    ["Internal Trace ID", `${grn.grn_no}-${line.item_code}`],
+    ["Status", line.qc_status || grn.qc_status],
+    ["Bin ID", line.putaway_bin],
+  ])}${printSignatures(["Handled By", "Inspector / Stamp", "Store Manager"])}</section>`;
+}
+
+window.printGRN = function(id) {
+  const grn = state.grns.find((x) => x.id === id);
+  if (!grn) return;
+  const lines = rowsFor(id, state.grnLines, "grn_id");
+  const summary = printMetaGrid([
+    ["GRN No.", grn.grn_no],
+    ["Date Received", printDate(grn.grn_date)],
+    ["Supplier", grn.supplier],
+    ["PO Ref", grn.po_no],
+    ["Invoice No", grn.invoice_no],
+    ["Received By", grn.received_by],
+    ["QC Status", grn.qc_status],
+    ["Line Count", lines.length],
+  ]);
+  const labels = lines.map((line) => grnStoreLabel(grn, line)).join("");
+  openPrintDocument(grn.grn_no, "Receiving / Store Label", `${summary}<div class="label-grid">${labels}</div>`);
+};
+
+window.printMIV = function(id) {
+  const miv = state.mivs.find((x) => x.id === id);
+  if (!miv) return;
+  const lines = rowsFor(id, state.mivLines, "miv_id");
+  printV7Document(miv.miv_no, "Material Issue Voucher", [
+    ["MIV No", miv.miv_no],
+    ["MIV Date", printDate(miv.miv_date)],
+    ["Issued To", miv.issued_to],
+    ["Department", miv.department],
+    ["Work Order", miv.work_order],
+    ["Return Expected", miv.return_expected],
+    ["Issued By", miv.issued_by],
+    ["Received By", miv.received_by],
+  ], ["S.No", "Item Code", "Description", "UOM", "From Bin", "Qty Issued"], lines.map((l, i) => [i + 1, l.item_code, l.description, l.uom, l.from_bin, moneyish(l.qty_issued)]), ["Stores Signature", "Receiver Signature", "Verified By"]);
+};
+
+window.printDeliveryChallan = function(id) {
+  const dc = state.deliveryChallans.find((x) => x.id === id);
+  if (!dc) return;
+  const lines = rowsFor(id, state.deliveryChallanLines, "dc_id");
+  printV7Document(dc.dc_no, "Delivery Challan", [
+    ["DC No", dc.dc_no],
+    ["DC Date", printDate(dc.dc_date)],
+    ["Vendor", dc.vendor],
+    ["Linked Job Work", dc.linked_job_work_no],
+    ["Expected Return", printDate(dc.expected_return_date)],
+    ["Vehicle No", dc.vehicle_no],
+    ["Approx Value", moneyish(dc.approx_value)],
+    ["Status", dc.status],
+  ], ["S.No", "Item Code", "Description", "UOM", "Qty", "Rate", "Value"], lines.map((l, i) => [i + 1, l.item_code, l.description, l.uom, moneyish(l.qty), moneyish(l.rate), moneyish(l.value)]), ["Prepared By", "Vendor / Receiver", "Authorized By"]);
+};
+
+window.printJobWork = function(id) {
+  const job = state.jobWorks.find((x) => x.id === id);
+  if (!job) return;
+  const lines = rowsFor(id, state.jobWorkLines, "job_work_id");
+  printV7Document(job.job_work_no, "Outside Job Work", [
+    ["Job Work No", job.job_work_no],
+    ["Date Sent", printDate(job.date_sent)],
+    ["Vendor", job.vendor],
+    ["Delivery Challan", job.delivery_challan_no],
+    ["Expected Return", printDate(job.expected_return_date)],
+    ["Process", job.process_instruction],
+    ["Status", job.status],
+    ["Charges", moneyish(job.job_charges)],
+  ], ["S.No", "Source Item", "Description", "UOM", "Qty Sent", "Output Item", "Qty Received", "Wastage"], lines.map((l, i) => [i + 1, l.source_item_code, l.source_description, l.source_uom, moneyish(l.qty_sent), l.output_item_code, moneyish(l.qty_received), moneyish(l.wastage_qty)]), ["Stores Signature", "Vendor Signature", "QC / Verified By"]);
+};
+
+window.printWIP = function(id) {
+  const wip = state.wipConversions.find((x) => x.id === id);
+  if (!wip) return;
+  const lines = rowsFor(id, state.wipConversionLines, "wip_id");
+  printV7Document(wip.wip_no, "WIP / Conversion", [
+    ["WIP No", wip.wip_no],
+    ["Start Date", printDate(wip.start_date)],
+    ["Completion Date", printDate(wip.completion_date)],
+    ["Work Order", wip.work_order],
+    ["Process", wip.process_name],
+    ["Output Item", wip.output_item_code],
+    ["Output Qty", moneyish(wip.output_qty)],
+    ["Status", wip.status],
+  ], ["S.No", "Input Item", "Description", "UOM", "Qty Used", "Unit Cost", "Total Value"], lines.map((l, i) => [i + 1, l.input_item_code, l.input_description, l.input_uom, moneyish(l.qty_used), moneyish(l.unit_cost), moneyish(l.total_value)]), ["Production", "Stores", "Verified By"]);
+};
+
+function sameItemRef(row, code, itemId, codeFields = ["item_code"], idFields = ["item_id"]) {
+  return codeFields.some((field) => upper(row?.[field]) === code) || idFields.some((field) => itemId && String(row?.[field] || "") === String(itemId));
+}
+
+function removeRows(list, predicate) {
+  const removed = [];
+  const kept = [];
+  (list || []).forEach((row) => (predicate(row) ? removed : kept).push(row));
+  return { kept, removed };
+}
+
+function pruneHeaders(headers, lines, fk, touchedIds) {
+  const removed = [];
+  const kept = [];
+  (headers || []).forEach((header) => {
+    if (touchedIds.has(header.id) && !lines.some((line) => line[fk] === header.id)) removed.push(header);
+    else kept.push(header);
+  });
+  return { kept, removed };
+}
+
+function stripItemCodeText(text, code) {
+  return String(text || "")
+    .split(/[,\n+]+/)
+    .map((x) => x.trim())
+    .filter((x) => x && upper(x) !== code)
+    .join(", ");
+}
+
+function cascadeDeleteItemLocal(item) {
+  const code = upper(item.item_code);
+  const itemId = item.id;
+  const removed = {};
+
+  const grnLines = removeRows(state.grnLines, (x) => sameItemRef(x, code, itemId, ["item_code"], []));
+  removed.grnLineCount = grnLines.removed.length; state.grnLines = grnLines.kept;
+  const grnHeaders = pruneHeaders(state.grns, state.grnLines, "grn_id", new Set(grnLines.removed.map((x) => x.grn_id)));
+  removed.grnHeaderIds = grnHeaders.removed.map((x) => x.id); state.grns = grnHeaders.kept;
+
+  const mivLines = removeRows(state.mivLines, (x) => sameItemRef(x, code, itemId));
+  removed.mivLineCount = mivLines.removed.length; state.mivLines = mivLines.kept;
+  const mivHeaders = pruneHeaders(state.mivs, state.mivLines, "miv_id", new Set(mivLines.removed.map((x) => x.miv_id)));
+  removed.mivHeaderIds = mivHeaders.removed.map((x) => x.id); state.mivs = mivHeaders.kept;
+
+  const dcLines = removeRows(state.deliveryChallanLines, (x) => sameItemRef(x, code, itemId, ["item_code"], []));
+  removed.dcLineCount = dcLines.removed.length; state.deliveryChallanLines = dcLines.kept;
+  const dcHeaders = pruneHeaders(state.deliveryChallans, state.deliveryChallanLines, "dc_id", new Set(dcLines.removed.map((x) => x.dc_id)));
+  removed.dcHeaderIds = dcHeaders.removed.map((x) => x.id); state.deliveryChallans = dcHeaders.kept;
+
+  const jobLines = removeRows(state.jobWorkLines, (x) => sameItemRef(x, code, itemId, ["source_item_code", "output_item_code"], []));
+  removed.jobLineCount = jobLines.removed.length; state.jobWorkLines = jobLines.kept;
+  const jobHeaders = pruneHeaders(state.jobWorks, state.jobWorkLines, "job_work_id", new Set(jobLines.removed.map((x) => x.job_work_id)));
+  removed.jobHeaderIds = jobHeaders.removed.map((x) => x.id); state.jobWorks = jobHeaders.kept;
+
+  const wipLines = removeRows(state.wipConversionLines, (x) => sameItemRef(x, code, itemId, ["input_item_code"], []));
+  removed.wipLineCount = wipLines.removed.length; state.wipConversionLines = wipLines.kept;
+  const touchedWipIds = new Set(wipLines.removed.map((x) => x.wip_id));
+  const wipHeaders = removeRows(state.wipConversions, (x) => sameItemRef(x, code, itemId, ["output_item_code"], []) || (touchedWipIds.has(x.id) && !state.wipConversionLines.some((line) => line.wip_id === x.id)));
+  removed.wipHeaderIds = wipHeaders.removed.map((x) => x.id); state.wipConversions = wipHeaders.kept; state.wipConversionLines = state.wipConversionLines.filter((line) => !removed.wipHeaderIds.includes(line.wip_id));
+
+  const returnLines = removeRows(state.returnLogLines, (x) => sameItemRef(x, code, itemId));
+  removed.returnLineCount = returnLines.removed.length; state.returnLogLines = returnLines.kept;
+  const returnHeaders = pruneHeaders(state.returnLogs, state.returnLogLines, "return_id", new Set(returnLines.removed.map((x) => x.return_id)));
+  removed.returnHeaderIds = returnHeaders.removed.map((x) => x.id); state.returnLogs = returnHeaders.kept;
+
+  const ticketLines = removeRows(state.ticketLines, (x) => sameItemRef(x, code, itemId));
+  removed.ticketLineCount = ticketLines.removed.length; state.ticketLines = ticketLines.kept;
+  const ticketHeaders = pruneHeaders(state.tickets, state.ticketLines, "ticket_id", new Set(ticketLines.removed.map((x) => x.ticket_id)));
+  removed.ticketHeaderIds = ticketHeaders.removed.map((x) => x.id); state.tickets = ticketHeaders.kept;
+
+  removed.ledgerCount = state.stockLedger.filter((x) => sameItemRef(x, code, itemId)).length;
+  state.stockLedger = state.stockLedger.filter((x) => !sameItemRef(x, code, itemId));
+  removed.movementCount = state.movements.filter((x) => sameItemRef(x, code, itemId)).length;
+  state.movements = state.movements.filter((x) => !sameItemRef(x, code, itemId));
+  removed.quarantineCount = state.quarantine.filter((x) => sameItemRef(x, code, itemId, ["item_code"], [])).length;
+  state.quarantine = state.quarantine.filter((x) => !sameItemRef(x, code, itemId, ["item_code"], []));
+  removed.scrapCount = state.scrapLogs.filter((x) => sameItemRef(x, code, itemId, ["item_code"], [])).length;
+  state.scrapLogs = state.scrapLogs.filter((x) => !sameItemRef(x, code, itemId, ["item_code"], []));
+  removed.costLayerCount = state.itemCostLayers.filter((x) => sameItemRef(x, code, itemId, ["item_code"], [])).length;
+  state.itemCostLayers = state.itemCostLayers.filter((x) => !sameItemRef(x, code, itemId, ["item_code"], []));
+  state.reorderSettingsDb = state.reorderSettingsDb.filter((x) => !sameItemRef(x, code, itemId, ["item_code"], []));
+  delete state.reorderSettings?.[item.id]; delete state.reorderSettings?.[item.item_code];
+
+  const changedBins = [];
+  state.binLocations = state.binLocations.map((bin) => {
+    const next = stripItemCodeText(bin.current_item_codes, code);
+    if (next !== String(bin.current_item_codes || "")) { changedBins.push({ ...bin, current_item_codes: next }); return { ...bin, current_item_codes: next }; }
+    return bin;
+  });
+  removed.changedBins = changedBins;
+  state.inventory = state.inventory.filter((x) => x.id !== item.id && upper(x.item_code) !== code);
+  return removed;
+}
+
+async function deleteDbMatches(table, column, value) {
+  if (!state.dbReady || !state.user || !value) return;
+  const request = state.supabase.from(table).delete().eq(column, value);
+  const res = typeof withDbTimeout === "function" ? await withDbTimeout(request, `${table} delete`) : await request;
+  if (res?.error) throw new Error(`${table} delete failed: ${res.error.message}`);
+}
+
+async function cascadeDeleteItemDb(item, removed) {
+  const code = upper(item.item_code);
+  const itemId = item.id;
+  await deleteDbMatches("grn_lines", "item_code", code);
+  await deleteDbMatches("miv_lines", "item_code", code); await deleteDbMatches("miv_lines", "item_id", itemId);
+  await deleteDbMatches("delivery_challan_lines", "item_code", code);
+  await deleteDbMatches("job_work_lines", "source_item_code", code); await deleteDbMatches("job_work_lines", "output_item_code", code);
+  await deleteDbMatches("wip_conversion_lines", "input_item_code", code);
+  await deleteDbMatches("return_log_lines", "item_code", code); await deleteDbMatches("return_log_lines", "item_id", itemId);
+  await deleteDbMatches("material_issue_ticket_lines", "item_code", code); await deleteDbMatches("material_issue_ticket_lines", "item_id", itemId);
+  await deleteDbMatches("stock_ledger", "item_code", code);
+  await deleteDbMatches("stock_movements", "item_code", code); await deleteDbMatches("stock_movements", "item_id", itemId);
+  await deleteDbMatches("quarantine_items", "item_code", code);
+  await deleteDbMatches("scrap_register", "item_code", code);
+  await deleteDbMatches("item_cost_layers", "item_code", code);
+  await deleteDbMatches("reorder_settings", "item_code", code);
+  for (const id of removed.grnHeaderIds || []) await deleteDbMatches("grn_headers", "id", id);
+  for (const id of removed.mivHeaderIds || []) await deleteDbMatches("miv_headers", "id", id);
+  for (const id of removed.dcHeaderIds || []) await deleteDbMatches("delivery_challans", "id", id);
+  for (const id of removed.jobHeaderIds || []) await deleteDbMatches("job_work_headers", "id", id);
+  for (const id of removed.wipHeaderIds || []) await deleteDbMatches("wip_conversion_lines", "wip_id", id);
+  for (const id of removed.wipHeaderIds || []) await deleteDbMatches("wip_conversions", "id", id);
+  for (const id of removed.returnHeaderIds || []) await deleteDbMatches("return_logs", "id", id);
+  for (const id of removed.ticketHeaderIds || []) await deleteDbMatches("material_issue_tickets", "id", id);
+  await deleteDbMatches("inventory_items", "id", itemId); await deleteDbMatches("inventory_items", "item_code", code);
+  if (removed.changedBins?.length) await upsertRows("bin_locations", removed.changedBins);
+}
+
+window.confirmDeleteItem = (id) => {
+  const item = state.inventory.find((x) => x.id === id);
+  if (!item) return;
+  const ok = confirm(`Delete ${item.item_code} from Inventory Master and remove it from GRN, MIV, ledger, issue, return, job work, WIP, scrap, reorder, and quarantine records?\n\nThis cannot be undone.`);
+  if (ok) deleteItem(id);
+};
+
+deleteItem = async function(id) {
+  const item = state.inventory.find((x) => x.id === id);
+  if (!item) return;
+  const removed = cascadeDeleteItemLocal(item);
+  saveReorderSettings?.();
+  persistLocal();
+  renderAll();
+  const removedCount = Object.entries(removed).reduce((sum, [key, value]) => key.endsWith("Count") ? sum + Number(value || 0) : sum, 0);
+  showWorkflowMessage(`Deleted ${item.item_code}. Removed ${removedCount} related row(s) from linked tables.`, true);
+  try {
+    await cascadeDeleteItemDb(item, removed);
+  } catch (err) {
+    console.error(err);
+    showWorkflowMessage(`Deleted locally, but database cleanup failed: ${errMsg(err)}`, false);
+  }
+};
 
 function ledgerExportRows() { return state.stockLedger.map((r) => ({ Date: r.ledger_date, Movement: r.movement_type, Source: r.source_doc_type, DocNo: r.source_doc_no, ItemCode: r.item_code, Description: r.description, UOM: r.uom, InQty: r.in_qty, OutQty: r.out_qty, Before: r.qty_before, After: r.qty_after, FromBin: r.from_bin, ToBin: r.to_bin, UnitCost: r.unit_cost, TotalValue: r.total_value, Remarks: r.remarks })); }
 function grnExportRows() { return state.grnLines.map((l) => ({ ItemCode: l.item_code, Description: l.description, UOM: l.uom, Received: l.received_qty, Accepted: l.accepted_qty })); }
@@ -1308,6 +1780,7 @@ const v7PreviousBindEvents = bindEvents;
 bindEvents = function() {
   v7PreviousBindEvents();
   setupItemAutofill();
+  $("grnItemType")?.addEventListener("change", () => refreshGeneratedGrnItemCode(true));
   $("openGrnModal")?.addEventListener("click", openGRNModal);
   $("openMivModal")?.addEventListener("click", openMIVModal);
   $("openDcModal")?.addEventListener("click", openDCModal);

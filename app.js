@@ -19,6 +19,291 @@ const $ = (id) => document.getElementById(id);
 const cleanStatus = (s) => (s || "OK").toString().trim().toUpperCase();
 const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
 const moneyish = (n) => Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
+const errMsg = (err) => err?.message || String(err || "Something went wrong.");
+const dbTimeoutMs = () => Number(window.SNS_DB_TIMEOUT_MS || 12000);
+const printLogoSrc = () => new URL("assets/stacknstock-logo.png", window.location.href).href;
+
+function printDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleDateString();
+}
+
+function printMetaGrid(rows) {
+  return `<div class="meta-grid">${rows.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value ?? "")}</strong></div>`).join("")}</div>`;
+}
+
+function printTable(headers, rows) {
+  return `<table><thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell ?? "")}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+}
+
+function printSignatures(labels = ["Prepared By", "Checked By", "Approved By"]) {
+  return `<div class="signatures">${labels.map((label) => `<div><span>${escapeHtml(label)}</span></div>`).join("")}</div>`;
+}
+
+function printDocumentHtml(title, subtitle, content) {
+  return `<!doctype html><html><head><title>${escapeHtml(title)}</title><style>
+    @page{size:A4;margin:14mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#111;margin:0;background:#fff}.sheet{max-width:1040px;margin:0 auto;border:2px solid #111;padding:18px;min-height:calc(297mm - 28mm)}.doc-head{display:grid;grid-template-columns:170px 1fr 170px;align-items:center;border-bottom:2px solid #111;padding-bottom:12px;gap:14px}.doc-head img{max-width:150px;max-height:48px;object-fit:contain}.doc-title{text-align:center}.doc-title h1{font-size:20px;margin:0;text-transform:uppercase;letter-spacing:.06em}.doc-title p{margin:5px 0 0;font-size:12px;color:#444}.print-meta{text-align:right;font-size:11px;color:#444}.meta-grid{display:grid;grid-template-columns:repeat(4,1fr);border-left:1px solid #111;border-top:1px solid #111;margin:16px 0}.meta-grid div{min-height:48px;border-right:1px solid #111;border-bottom:1px solid #111;padding:7px}.meta-grid span{display:block;font-size:10px;font-weight:700;text-transform:uppercase;color:#555;letter-spacing:.06em}.meta-grid strong{display:block;margin-top:4px;font-size:13px}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{border:1px solid #111;padding:7px;font-size:12px;vertical-align:top}th{background:#efefef;text-transform:uppercase;font-size:11px;letter-spacing:.04em}.signatures{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:42px}.signatures div{border-top:1px solid #111;text-align:center;padding-top:8px;font-size:12px}.label-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.store-label{break-inside:avoid;border:2px solid #111;padding:12px;min-height:148mm}.store-label h2{font-size:16px;margin:0 0 10px;text-align:center}.store-label .meta-grid{grid-template-columns:130px 1fr 130px 1fr;margin:8px 0}.store-label .meta-grid div{min-height:42px}.printbar{text-align:right;margin-bottom:10px}@media print{.printbar{display:none}.sheet{border:2px solid #000}.store-label{page-break-inside:avoid}}</style></head><body><div class="printbar"><button onclick="window.print()">Print</button></div><div class="sheet"><header class="doc-head"><img src="${printLogoSrc()}" alt="Stack n Stock" /><div class="doc-title"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(subtitle || "Generated from Stack n Stock Inventory OS")}</p></div><div class="print-meta">Printed<br>${new Date().toLocaleString()}</div></header>${content}</div></body></html>`;
+}
+
+function openPrintDocument(title, subtitle, content) {
+  const w = window.open("", "_blank", "width=1040,height=780");
+  if (!w) return alert("Allow pop-ups to print this document.");
+  w.document.write(printDocumentHtml(title, subtitle, content));
+  w.document.close();
+  w.focus();
+  setTimeout(() => w.print(), 350);
+}
+
+function showWorkflowMessage(message, ok = true) {
+  if (!message) return;
+  const openDialog = document.querySelector("dialog[open]");
+  const host = openDialog || document.body;
+  let region = host.querySelector(":scope > .workflow-toast-region");
+  if (!region) {
+    region = document.createElement("div");
+    region.className = "workflow-toast-region";
+    region.setAttribute("aria-live", "polite");
+    region.setAttribute("aria-atomic", "true");
+    host.prepend(region);
+  }
+  const toast = document.createElement("div");
+  toast.className = `workflow-toast ${ok ? "success" : "error"}`;
+  toast.textContent = message;
+  region.appendChild(toast);
+  setTimeout(() => toast.remove(), ok ? 4200 : 7000);
+}
+
+function placeMessageAtTop(el) {
+  if (!el) return;
+  const form = el.closest("form");
+  const head = form?.querySelector(".modal-head");
+  if (head && head.nextElementSibling !== el) head.insertAdjacentElement("afterend", el);
+}
+
+function setFormMessage(id, message, ok = true) {
+  const el = $(id);
+  if (!el) return;
+  placeMessageAtTop(el);
+  el.textContent = message || "";
+  el.classList.toggle("hidden", !message);
+  el.classList.toggle("success", !!ok);
+  el.classList.toggle("error", !ok);
+}
+
+function closeDialogAfterSuccess(dialogId, delay = 450) {
+  setTimeout(() => {
+    const dlg = $(dialogId);
+    if (dlg?.open) dlg.close();
+  }, delay);
+}
+
+function setSubmitBusy(form, busy, label = "Saving...") {
+  const btn = form?.querySelector('button[type="submit"]');
+  if (!btn) return;
+  if (busy) {
+    btn.dataset.originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = label;
+  } else {
+    btn.disabled = false;
+    if (btn.dataset.originalText) btn.textContent = btn.dataset.originalText;
+    delete btn.dataset.originalText;
+  }
+}
+
+function userProfileKey() {
+  const id = state.user?.id || state.user?.email || "local";
+  return `sns_user_profile_${id}`;
+}
+
+function storedUserProfile() {
+  try { return JSON.parse(localStorage.getItem(userProfileKey()) || "{}"); }
+  catch (_) { return {}; }
+}
+
+function currentUserProfile() {
+  const meta = state.user?.user_metadata || {};
+  const stored = storedUserProfile();
+  const email = state.user?.email || "";
+  const name = stored.name || meta.display_name || meta.full_name || meta.name || email.split("@")[0] || "User";
+  return { name, email, avatarData: stored.avatarData || meta.avatar_url || "" };
+}
+
+function initialsFor(name) {
+  return String(name || "U").trim().split(/\s+/).slice(0, 2).map((x) => x[0]).join("").toUpperCase() || "U";
+}
+
+function paintAvatar(el, profile) {
+  if (!el) return;
+  const avatar = profile?.avatarData || "";
+  el.textContent = initialsFor(profile?.name);
+  el.classList.toggle("has-image", !!avatar);
+  el.style.backgroundImage = avatar ? `url("${avatar}")` : "";
+}
+
+function renderUserIdentity() {
+  if (!state.user) return;
+  const profile = currentUserProfile();
+  if ($("userDisplayName")) $("userDisplayName").textContent = profile.name;
+  paintAvatar($("userAvatar"), profile);
+}
+
+function openUserSettings() {
+  if (!state.user) return;
+  const profile = currentUserProfile();
+  $("profileName").value = profile.name;
+  $("profileEmail").value = profile.email;
+  $("profilePassword").value = "";
+  $("profilePasswordConfirm").value = "";
+  state.pendingProfileAvatarData = profile.avatarData || "";
+  paintAvatar($("profileAvatarPreview"), profile);
+  setFormMessage("profileMessage", "", true);
+  $("userSettingsModal")?.showModal();
+}
+
+function readResizedProfileImage(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) return resolve("");
+    if (!/^image\//.test(file.type || "")) return reject(new Error("Select an image file for the profile pic."));
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read profile pic."));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Could not load profile pic."));
+      img.onload = () => {
+        const max = 180;
+        const ratio = Math.min(1, max / Math.max(img.width, img.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(img.width * ratio));
+        canvas.height = Math.max(1, Math.round(img.height * ratio));
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/jpeg", 0.72));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function handleProfilePicChange(e) {
+  try {
+    state.pendingProfileAvatarData = await readResizedProfileImage(e.target.files?.[0]);
+    paintAvatar($("profileAvatarPreview"), { name: $("profileName")?.value, avatarData: state.pendingProfileAvatarData });
+    setFormMessage("profileMessage", "Profile pic ready. Save profile to apply it.", true);
+  } catch (err) {
+    setFormMessage("profileMessage", errMsg(err), false);
+  }
+}
+
+async function saveUserSettings(e) {
+  e.preventDefault();
+  if (!state.user) return;
+  const form = e.currentTarget;
+  const name = $("profileName").value.trim() || currentUserProfile().name;
+  const email = $("profileEmail").value.trim();
+  const password = $("profilePassword").value;
+  const confirmPassword = $("profilePasswordConfirm").value;
+  if (password && password !== confirmPassword) return setFormMessage("profileMessage", "Passwords do not match.", false);
+  if (password && password.length < 6) return setFormMessage("profileMessage", "Password must be at least 6 characters.", false);
+  setSubmitBusy(form, true, "Saving...");
+  setFormMessage("profileMessage", "Saving profile...", true);
+  try {
+    const avatarData = state.pendingProfileAvatarData || currentUserProfile().avatarData || "";
+    const stored = { name, avatarData };
+    localStorage.setItem(userProfileKey(), JSON.stringify(stored));
+    if (state.dbReady && state.supabase?.auth?.updateUser) {
+      const attributes = { data: { ...(state.user.user_metadata || {}), display_name: name, full_name: name, avatar_url: avatarData } };
+      if (email && email !== state.user.email) attributes.email = email;
+      if (password) attributes.password = password;
+      const { data, error } = await state.supabase.auth.updateUser(attributes);
+      if (error) throw error;
+      state.user = data?.user || state.user;
+    }
+    renderUserIdentity();
+    setFormMessage("profileMessage", "Profile saved. Email changes may require confirmation.", true);
+    showWorkflowMessage("Profile saved.", true);
+    setTimeout(() => $("userSettingsModal")?.close(), 500);
+  } catch (err) {
+    setFormMessage("profileMessage", errMsg(err), false);
+    showWorkflowMessage(errMsg(err), false);
+  } finally {
+    setSubmitBusy(form, false);
+  }
+}
+
+async function withDbTimeout(operation, label = "Database request") {
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const request = controller && operation && typeof operation.abortSignal === "function"
+    ? operation.abortSignal(controller.signal)
+    : operation;
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      controller?.abort();
+      reject(new Error(`${label} timed out. Check the connection and try again.`));
+    }, dbTimeoutMs());
+  });
+  try {
+    return await Promise.race([request, timeout]);
+  } catch (err) {
+    if (/maximum call stack size exceeded/i.test(err?.message || "")) {
+      throw new Error(`${label} failed before reaching the database. Refresh the page and try again.`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function formMessageTarget(form) {
+  return {
+    itemForm: "itemMessage",
+    ncrForm: "ncrMessage",
+    binForm: "binMessage",
+    issueForm: "issueMessage",
+    ticketRequestForm: "ticketRequestMessage",
+    returnForm: "returnMessage",
+    grnForm: "grnMessage",
+    mivForm: "mivMessage",
+    dcForm: "dcMessage",
+    jobWorkForm: "jobWorkMessage",
+    wipForm: "wipMessage",
+    scrapForm: "scrapMessage",
+    authForm: "authMessage",
+  }[form?.id];
+}
+
+function fieldLabel(input) {
+  const label = input.closest("label");
+  if (!label) return input.id || input.name || "This field";
+  return [...label.childNodes]
+    .filter((node) => node.nodeType === Node.TEXT_NODE)
+    .map((node) => node.textContent.trim())
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s*\*\s*$/, "") || input.id || "This field";
+}
+
+function showValidationMessage(input) {
+  const form = input.form;
+  if (!form || form.dataset.validationNotified === "1") return;
+  form.dataset.validationNotified = "1";
+  setTimeout(() => { delete form.dataset.validationNotified; }, 250);
+  const msg = `${fieldLabel(input)}: ${input.validationMessage || "Check this value."}`;
+  const target = formMessageTarget(form);
+  if (target === "ticketRequestMessage" && typeof setTicketMsg === "function") setTicketMsg(msg, false);
+  else if (target === "returnMessage" && typeof setReturnMsg === "function") setReturnMsg(msg, false);
+  else if (["grnMessage", "mivMessage", "dcMessage", "jobWorkMessage", "wipMessage", "scrapMessage"].includes(target) && typeof setV7Msg === "function") setV7Msg(target, msg, false);
+  else if (target === "authMessage" && typeof setAuthMessage === "function") { setAuthMessage(msg); showWorkflowMessage(msg, false); }
+  else { setFormMessage(target, msg, false); showWorkflowMessage(msg, false); }
+}
+
+function installFormValidationMessages() {
+  if (document.body.dataset.workflowValidationInstalled) return;
+  document.body.dataset.workflowValidationInstalled = "1";
+  document.addEventListener("invalid", (event) => showValidationMessage(event.target), true);
+}
 
 function normalizeItem(row) {
   return {
@@ -107,17 +392,22 @@ async function init() {
   bindEvents();
 
   if (state.dbReady) {
-    const { data, error } = await state.supabase.auth.getSession();
-    if (error) setAuthMessage(error.message);
-    state.user = data.session?.user || null;
+    await restoreSupabaseSession(true);
 
-    state.supabase.auth.onAuthStateChange(async (event, session) => {
+    state.supabase.auth.onAuthStateChange((event, session) => {
       state.user = session?.user || null;
-      if (event === "SIGNED_OUT" || !state.user) {
-        showAuth();
-        return;
-      }
-      await enterApp();
+      setTimeout(() => {
+        if (event === "SIGNED_OUT" || !state.user) {
+          showAuth();
+          return;
+        }
+        enterApp().catch((err) => {
+          const msg = errMsg(err);
+          setAuthMessage(msg);
+          showWorkflowMessage(msg, false);
+          if (!state.user) showAuth();
+        });
+      }, 0);
     });
 
     if (!state.user) {
@@ -132,11 +422,31 @@ async function init() {
 function setupSupabase() {
   if (window.SNS_SUPABASE_URL && window.SNS_SUPABASE_ANON_KEY && window.supabase) {
     state.supabase = window.supabase.createClient(window.SNS_SUPABASE_URL, window.SNS_SUPABASE_ANON_KEY, {
-      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storage: window.localStorage }
     });
     state.dbReady = true;
     $("connectionStatus").textContent = "Supabase connected";
     $("connectionHelp").textContent = "Connected to Supabase. Inventory changes sync with the database.";
+  }
+}
+
+async function restoreSupabaseSession(showErrors = false) {
+  if (!state.dbReady || !state.supabase?.auth) return null;
+  try {
+    const { data, error } = await state.supabase.auth.getSession();
+    if (error && showErrors) setAuthMessage(error.message);
+    let session = data?.session || null;
+    if (!session) {
+      const refreshed = await state.supabase.auth.refreshSession().catch((err) => ({ error: err, data: null }));
+      if (refreshed.error && showErrors && !/session.*missing/i.test(refreshed.error.message || "")) setAuthMessage(refreshed.error.message);
+      session = refreshed.data?.session || null;
+    }
+    state.user = session?.user || null;
+    return session;
+  } catch (err) {
+    if (showErrors) setAuthMessage(errMsg(err));
+    state.user = null;
+    return null;
   }
 }
 
@@ -151,6 +461,7 @@ async function refreshFromDatabase() {
   try {
     await loadData();
     renderAll();
+    renderUserIdentity();
   } finally {
     setLoadingState(false);
   }
@@ -174,8 +485,8 @@ function showAuth() {
 
 async function loadData() {
   if (state.dbReady) {
-    const { data: sessionData } = await state.supabase.auth.getSession();
-    state.user = sessionData.session?.user || null;
+    const session = await restoreSupabaseSession();
+    state.user = session?.user || null;
     if (!state.user) {
       showAuth();
       return;
@@ -259,15 +570,16 @@ function persistLocal() {
 
 async function saveItem(item) {
   item.updated_at = new Date().toISOString();
+  if (state.dbReady) {
+    const { error } = await withDbTimeout(state.supabase.from("inventory_items").upsert(item), "Item save");
+    if (error) throw new Error(`Item save failed: ${error.message}`);
+  }
   const i = state.inventory.findIndex((x) => x.id === item.id);
   if (i >= 0) state.inventory[i] = item;
   else state.inventory.unshift(item);
   persistLocal();
-  if (state.dbReady) {
-    const { error } = await state.supabase.from("inventory_items").upsert(item);
-    if (error) alert(`Save failed: ${error.message}`);
-  }
   renderAll();
+  return item;
 }
 
 async function deleteItem(id) {
@@ -282,15 +594,16 @@ async function deleteItem(id) {
 
 async function saveNcr(row) {
   row.updated_at = new Date().toISOString();
+  if (state.dbReady) {
+    const { error } = await withDbTimeout(state.supabase.from("quarantine_items").upsert(row), "NCR save");
+    if (error) throw new Error(`NCR save failed: ${error.message}`);
+  }
   const i = state.quarantine.findIndex((x) => x.id === row.id);
   if (i >= 0) state.quarantine[i] = row;
   else state.quarantine.unshift(row);
   persistLocal();
-  if (state.dbReady) {
-    const { error } = await state.supabase.from("quarantine_items").upsert(row);
-    if (error) alert(`NCR save failed: ${error.message}`);
-  }
   renderAll();
+  return row;
 }
 
 async function deleteNcr(id) {
@@ -305,15 +618,16 @@ async function deleteNcr(id) {
 
 async function saveBin(row) {
   row.updated_at = new Date().toISOString();
+  if (state.dbReady) {
+    const { error } = await withDbTimeout(state.supabase.from("bin_locations").upsert(row), "Bin save");
+    if (error) throw new Error(`Bin save failed: ${error.message}`);
+  }
   const i = state.binLocations.findIndex((x) => x.id === row.id);
   if (i >= 0) state.binLocations[i] = row;
   else state.binLocations.unshift(row);
   persistLocal();
-  if (state.dbReady) {
-    const { error } = await state.supabase.from("bin_locations").upsert(row);
-    if (error) alert(`Bin save failed: ${error.message}`);
-  }
   renderAll();
+  return row;
 }
 
 async function deleteBin(id) {
@@ -329,8 +643,8 @@ async function deleteBin(id) {
 async function issueToProduction(item, qtyTaken, issuedTo, workOrder, notes) {
   const before = Number(item.qty || 0);
   const taken = Math.max(0, Number(qtyTaken || 0));
-  if (!taken) return alert("Enter a quantity greater than 0.");
-  if (taken > before) return alert("Issue quantity cannot be greater than available quantity.");
+  if (!taken) throw new Error("Enter a quantity greater than 0.");
+  if (taken > before) throw new Error("Issue quantity cannot be greater than available quantity.");
   const after = Math.max(0, before - taken);
   const updated = normalizeItem({ ...item, qty: after, updated_at: new Date().toISOString() });
   const movement = normalizeMovement({
@@ -338,20 +652,20 @@ async function issueToProduction(item, qtyTaken, issuedTo, workOrder, notes) {
     bin: item.bin, qty_taken: taken, qty_before: before, qty_after: after, issued_to: issuedTo || "Production",
     work_order: workOrder || "", notes: notes || "", movement_type: "PRODUCTION_ISSUE", created_at: new Date().toISOString(),
   });
+  if (state.dbReady) {
+    const [{ error: itemError }, { error: moveError }] = await Promise.all([
+      withDbTimeout(state.supabase.from("inventory_items").upsert(updated), "Stock update"),
+      withDbTimeout(state.supabase.from("stock_movements").insert(movement), "Movement log"),
+    ]);
+    if (itemError) throw new Error(`Stock update failed: ${itemError.message}`);
+    if (moveError) throw new Error(`Movement log failed: ${moveError.message}`);
+  }
   const i = state.inventory.findIndex((x) => x.id === item.id);
   if (i >= 0) state.inventory[i] = updated;
   state.movements.unshift(movement);
   persistLocal();
-  if (state.dbReady) {
-    const [{ error: itemError }, { error: moveError }] = await Promise.all([
-      state.supabase.from("inventory_items").upsert(updated),
-      state.supabase.from("stock_movements").insert(movement),
-    ]);
-    if (itemError) alert(`Stock update failed: ${itemError.message}`);
-    if (moveError) alert(`Movement log failed: ${moveError.message}`);
-  }
-  if (after < state.reorderThreshold) alert(`${item.item_code} is now below reorder point. Available qty: ${moneyish(after)}`);
   renderAll();
+  return { item: updated, movement, belowReorder: after < state.reorderThreshold };
 }
 
 function filteredInventory() {
@@ -471,6 +785,7 @@ function renderMovements() {
 }
 
 function bindEvents() {
+  installFormValidationMessages();
   document.querySelectorAll(".nav-btn").forEach((btn) => btn.addEventListener("click", () => { state.view = btn.dataset.view; document.querySelectorAll(".nav-btn").forEach((b) => b.classList.remove("active")); btn.classList.add("active"); renderAll(); }));
   $("searchInput").addEventListener("input", (e) => { state.search = e.target.value; renderAll(); });
   $("statusFilter").addEventListener("change", (e) => { state.status = e.target.value; renderAll(); });
@@ -489,9 +804,13 @@ function bindEvents() {
   $("authForm").addEventListener("submit", handleSignIn);
   $("signUpBtn").addEventListener("click", handleSignUp);
   $("signOutBtn").addEventListener("click", handleSignOut);
+  $("userProfileBtn")?.addEventListener("click", openUserSettings);
+  $("userSettingsForm")?.addEventListener("submit", saveUserSettings);
+  $("profilePicInput")?.addEventListener("change", handleProfilePicChange);
 }
 
 function openItemModal(item = null) {
+  setFormMessage("itemMessage", "", true);
   $("itemModalTitle").textContent = item ? "Edit Inventory Item" : "Add Inventory Item";
   $("itemId").value = item?.id || "";
   $("supplier").value = item?.supplier || "";
@@ -506,6 +825,7 @@ function openItemModal(item = null) {
 }
 
 function openNcrModal(row = null) {
+  setFormMessage("ncrMessage", "", true);
   $("ncrModalTitle").textContent = row ? "Edit Quarantine / NCR" : "Add Quarantine / NCR";
   $("ncrId").value = row?.id || "";
   $("ncrNo").value = row?.ncr_no || "";
@@ -522,6 +842,7 @@ function openNcrModal(row = null) {
 }
 
 function openBinModal(row = null) {
+  setFormMessage("binMessage", "", true);
   $('binModalTitle').textContent = row ? 'Edit Bin Location' : 'Add Bin Location';
   $('binIdHidden').value = row?.id || '';
   $('binId').value = row?.bin_id || '';
@@ -539,6 +860,7 @@ function openBinModal(row = null) {
 }
 
 function openIssueModal(item) {
+  setFormMessage("issueMessage", "", true);
   $('issueItemId').value = item.id;
   $('issueItemCode').textContent = item.item_code;
   $('issueItemDescription').textContent = item.description;
@@ -558,44 +880,104 @@ window.editBin = (id) => openBinModal(state.binLocations.find((x) => x.id === id
 window.confirmDeleteBin = (id) => { if (confirm("Delete this bin location?")) deleteBin(id); };
 window.openIssueModalById = (id) => openIssueModal(state.inventory.find((x) => x.id === id));
 
-function handleItemSubmit(e) {
+async function handleItemSubmit(e) {
   e.preventDefault();
-  saveItem(normalizeItem({ id: $("itemId").value || uid(), supplier: $("supplier").value, item_code: $("itemCode").value, description: $("description").value, uom: $("uom").value, qty: $("qty").value, status: $("status").value, bin: $("bin").value, part_no: $("partNo").value }));
-  $("itemModal").close();
+  const form = e.currentTarget;
+  setSubmitBusy(form, true);
+  setFormMessage("itemMessage", "Saving item...", true);
+  try {
+    const item = await saveItem(normalizeItem({ id: $("itemId").value || uid(), supplier: $("supplier").value, item_code: $("itemCode").value, description: $("description").value, uom: $("uom").value, qty: $("qty").value, status: $("status").value, bin: $("bin").value, part_no: $("partNo").value }));
+    const msg = `Success: ${item.item_code} saved.`;
+    setFormMessage("itemMessage", msg, true);
+    showWorkflowMessage(msg, true);
+    closeDialogAfterSuccess("itemModal");
+  } catch (err) {
+    const msg = errMsg(err);
+    setFormMessage("itemMessage", msg, false);
+    showWorkflowMessage(msg, false);
+  } finally {
+    setSubmitBusy(form, false);
+  }
 }
 
-function handleNcrSubmit(e) {
+async function handleNcrSubmit(e) {
   e.preventDefault();
-  saveNcr(normalizeNcr({ id: $("ncrId").value || uid(), ncr_no: $("ncrNo").value, po_ref: $("poRef").value, supplier: $("ncrSupplier").value, item_code: $("ncrItemCode").value, description: $("ncrDescription").value, qty_hold: $("qtyHold").value, status: $("ncrStatus").value, reason: $("reason").value, owner: $("owner").value, target_close: $("targetClose").value }));
-  $("ncrForm").reset();
-  $("ncrModal").close();
+  const form = e.currentTarget;
+  setSubmitBusy(form, true);
+  setFormMessage("ncrMessage", "Saving NCR...", true);
+  try {
+    const row = await saveNcr(normalizeNcr({ id: $("ncrId").value || uid(), ncr_no: $("ncrNo").value, po_ref: $("poRef").value, supplier: $("ncrSupplier").value, item_code: $("ncrItemCode").value, description: $("ncrDescription").value, qty_hold: $("qtyHold").value, status: $("ncrStatus").value, reason: $("reason").value, owner: $("owner").value, target_close: $("targetClose").value }));
+    const msg = `Success: NCR ${row.ncr_no || row.item_code} saved.`;
+    setFormMessage("ncrMessage", msg, true);
+    showWorkflowMessage(msg, true);
+    closeDialogAfterSuccess("ncrModal");
+  } catch (err) {
+    const msg = errMsg(err);
+    setFormMessage("ncrMessage", msg, false);
+    showWorkflowMessage(msg, false);
+  } finally {
+    setSubmitBusy(form, false);
+  }
 }
 
-function handleBinSubmit(e) {
+async function handleBinSubmit(e) {
   e.preventDefault();
-  saveBin(normalizeBin({
-    id: $('binIdHidden').value || uid(),
-    bin_id: $('binId').value,
-    area_room: $('binArea').value,
-    rack_no: $('binRack').value,
-    level: $('binLevel').value,
-    bin_no: $('binNo').value,
-    bin_type: $('binType').value,
-    status: $('binStatus').value,
-    allowed_category: $('binCategory').value,
-    current_item_codes: $('binCurrentItems').value,
-    label_posted: $('binLabelPosted').value,
-    notes: $('binNotes').value,
-  }));
-  $('binModal').close();
+  const form = e.currentTarget;
+  setSubmitBusy(form, true);
+  setFormMessage("binMessage", "Saving bin...", true);
+  try {
+    const row = await saveBin(normalizeBin({
+      id: $('binIdHidden').value || uid(),
+      bin_id: $('binId').value,
+      area_room: $('binArea').value,
+      rack_no: $('binRack').value,
+      level: $('binLevel').value,
+      bin_no: $('binNo').value,
+      bin_type: $('binType').value,
+      status: $('binStatus').value,
+      allowed_category: $('binCategory').value,
+      current_item_codes: $('binCurrentItems').value,
+      label_posted: $('binLabelPosted').value,
+      notes: $('binNotes').value,
+    }));
+    const msg = `Success: Bin ${row.bin_id} saved.`;
+    setFormMessage("binMessage", msg, true);
+    showWorkflowMessage(msg, true);
+    closeDialogAfterSuccess("binModal");
+  } catch (err) {
+    const msg = errMsg(err);
+    setFormMessage("binMessage", msg, false);
+    showWorkflowMessage(msg, false);
+  } finally {
+    setSubmitBusy(form, false);
+  }
 }
 
-function handleIssueSubmit(e) {
+async function handleIssueSubmit(e) {
   e.preventDefault();
+  const form = e.currentTarget;
   const item = state.inventory.find((x) => x.id === $('issueItemId').value);
-  if (!item) return alert('Item not found. Refresh data and try again.');
-  issueToProduction(item, $('issueQty').value, $('issueTo').value, $('issueWorkOrder').value, $('issueNotes').value);
-  $('issueModal').close();
+  if (!item) {
+    const msg = 'Item not found. Refresh data and try again.';
+    setFormMessage("issueMessage", msg, false);
+    showWorkflowMessage(msg, false);
+    return;
+  }
+  setSubmitBusy(form, true, "Issuing...");
+  setFormMessage("issueMessage", "Issuing stock...", true);
+  try {
+    const result = await issueToProduction(item, $('issueQty').value, $('issueTo').value, $('issueWorkOrder').value, $('issueNotes').value);
+    const msg = `Success: Issued ${moneyish(result.movement.qty_taken)} ${result.item.uom || ""} of ${result.item.item_code}.`;
+    setFormMessage("issueMessage", msg, true);
+    showWorkflowMessage(result.belowReorder ? `${msg} Item is below reorder point.` : msg, true);
+    closeDialogAfterSuccess("issueModal");
+  } catch (err) {
+    const msg = errMsg(err);
+    setFormMessage("issueMessage", msg, false);
+    showWorkflowMessage(msg, false);
+  } finally {
+    setSubmitBusy(form, false);
+  }
 }
 
 async function handleSignIn(e) {
@@ -603,8 +985,19 @@ async function handleSignIn(e) {
   if (!state.dbReady) return setAuthMessage("Add Supabase keys in config.js first.");
   state.team = $('teamSelect')?.value || state.team || 'inventory';
   localStorage.setItem('sns_selected_team', state.team);
-  const { error } = await state.supabase.auth.signInWithPassword({ email: $("authEmail").value, password: $("authPassword").value });
-  setAuthMessage(error ? error.message : "Signed in.");
+  setAuthMessage("Signing in...");
+  try {
+    const { data, error } = await state.supabase.auth.signInWithPassword({ email: $("authEmail").value, password: $("authPassword").value });
+    if (error) return setAuthMessage(error.message);
+    state.user = data?.session?.user || data?.user || null;
+    setAuthMessage("Signed in. Loading dashboard...");
+    await enterApp();
+    setAuthMessage("");
+  } catch (err) {
+    const msg = errMsg(err);
+    setAuthMessage(msg);
+    showWorkflowMessage(msg, false);
+  }
 }
 
 async function handleSignUp() {
@@ -735,20 +1128,29 @@ function makeTicketNo() {
 }
 
 async function enterApp() {
-  const savedTeam = localStorage.getItem('sns_selected_team');
-  const selectedTeam = $('teamSelect')?.value;
-  state.team = savedTeam || selectedTeam || state.team || 'inventory';
-  if ($('teamSelect')) $('teamSelect').value = state.team;
-  localStorage.setItem('sns_selected_team', state.team);
-  $('authScreen').classList.add('hidden');
-  if (state.team === 'production') {
-    $('appShell').classList.add('hidden');
-    $('productionPortal').classList.remove('hidden');
-  } else {
-    $('productionPortal').classList.add('hidden');
-    $('appShell').classList.remove('hidden');
+  if (state.enterAppPromise) return state.enterAppPromise;
+  state.enterAppPromise = (async () => {
+    const savedTeam = localStorage.getItem('sns_selected_team');
+    const selectedTeam = $('teamSelect')?.value;
+    state.team = savedTeam || selectedTeam || state.team || 'inventory';
+    if ($('teamSelect')) $('teamSelect').value = state.team;
+    localStorage.setItem('sns_selected_team', state.team);
+    $('authScreen').classList.add('hidden');
+    if (state.team === 'production') {
+      $('appShell').classList.add('hidden');
+      $('productionPortal').classList.remove('hidden');
+    } else {
+      $('productionPortal').classList.add('hidden');
+      $('appShell').classList.remove('hidden');
+    }
+    renderUserIdentity();
+    await refreshFromDatabase();
+  })();
+  try {
+    return await state.enterAppPromise;
+  } finally {
+    state.enterAppPromise = null;
   }
-  await refreshFromDatabase();
 }
 
 function showAuth() {
@@ -760,8 +1162,8 @@ function showAuth() {
 
 async function loadData() {
   if (state.dbReady) {
-    const { data: sessionData } = await state.supabase.auth.getSession();
-    state.user = sessionData.session?.user || null;
+    const session = await restoreSupabaseSession();
+    state.user = session?.user || null;
     if (!state.user) { showAuth(); return; }
 
     const [inv, ncr, bins, moves, tickets, lines] = await Promise.all([
@@ -985,9 +1387,9 @@ async function raiseTicket(e) {
   state.ticketLines.push(...lines);
   persistLocal();
   if (state.dbReady) {
-    const { error: tErr } = await state.supabase.from('material_issue_tickets').insert(dbSafeTicket(ticket));
+    const { error: tErr } = await withDbTimeout(state.supabase.from('material_issue_tickets').insert(dbSafeTicket(ticket)), "Ticket save").catch((err) => ({ error: err }));
     if (tErr) return setTicketMsg(`Ticket save failed: ${tErr.message}`);
-    const { error: lErr } = await state.supabase.from('material_issue_ticket_lines').insert(lines);
+    const { error: lErr } = await withDbTimeout(state.supabase.from('material_issue_ticket_lines').insert(lines), "Ticket line save").catch((err) => ({ error: err }));
     if (lErr) return setTicketMsg(`Ticket line save failed: ${lErr.message}`);
   }
   state.cart = [];
@@ -997,7 +1399,7 @@ async function raiseTicket(e) {
   showProdInventory();
   renderAll();
 }
-function setTicketMsg(msg) { if ($('ticketRequestMessage')) $('ticketRequestMessage').textContent = msg; }
+function setTicketMsg(msg) { if ($('ticketRequestMessage')) $('ticketRequestMessage').textContent = msg; if (msg) showWorkflowMessage(msg, false); }
 function showProdCart() { $('prodInventoryPanel').classList.add('hidden'); $('prodCartPanel').classList.remove('hidden'); renderCart(); }
 function showProdInventory() { $('prodCartPanel').classList.add('hidden'); $('prodInventoryPanel').classList.remove('hidden'); }
 
@@ -1030,10 +1432,10 @@ window.issueTicket = async (ticketId) => {
   state.movements.unshift(...movements);
   persistLocal();
   if (state.dbReady) {
-    for (const item of updatedItems) await state.supabase.from('inventory_items').upsert(item);
-    for (const line of updatedLines) await state.supabase.from('material_issue_ticket_lines').upsert(line);
-    await state.supabase.from('stock_movements').insert(movements);
-    await state.supabase.from('material_issue_tickets').upsert(dbSafeTicket(ticket));
+    for (const item of updatedItems) await withDbTimeout(state.supabase.from('inventory_items').upsert(item), "Ticket inventory update");
+    for (const line of updatedLines) await withDbTimeout(state.supabase.from('material_issue_ticket_lines').upsert(line), "Ticket line update");
+    await withDbTimeout(state.supabase.from('stock_movements').insert(movements), "Ticket movement save");
+    await withDbTimeout(state.supabase.from('material_issue_tickets').upsert(dbSafeTicket(ticket)), "Ticket status update");
   }
   renderAll();
   printTicket(ticketId);
@@ -1044,7 +1446,7 @@ window.rejectTicket = async (ticketId) => {
   if (!ticket || !confirm(`Reject ${ticket.ticket_no}?`)) return;
   ticket.status = 'REJECTED'; ticket.updated_at = new Date().toISOString();
   persistLocal();
-  if (state.dbReady) await state.supabase.from('material_issue_tickets').upsert(dbSafeTicket(ticket));
+  if (state.dbReady) await withDbTimeout(state.supabase.from('material_issue_tickets').upsert(dbSafeTicket(ticket)), "Ticket reject update");
   renderAll();
 };
 
@@ -1052,16 +1454,21 @@ window.printTicket = (ticketId) => {
   const ticket = state.tickets.find((x) => x.id === ticketId);
   if (!ticket) return;
   const lines = ticketLines(ticketId);
-  const w = window.open('', '_blank', 'width=980,height=760');
-  w.document.write(ticketPrintHtml(ticket, lines));
-  w.document.close();
-  w.focus();
-  setTimeout(() => w.print(), 300);
+  openPrintDocument(ticket.ticket_no, "Material Issue Ticket", ticketPrintHtml(ticket, lines));
 };
 
 function ticketPrintHtml(ticket, lines) {
-  const lineRows = [...lines, ...Array(Math.max(0, 8 - lines.length)).fill({})].map((l, i) => `<tr><td>${i + 1}</td><td>${escapeHtml(l.item_code || '')}</td><td>${escapeHtml(l.part_no || '')}</td><td>${escapeHtml(l.description || '')}</td><td>${escapeHtml(l.lot_trace_id || '')}</td><td>${escapeHtml(l.from_bin || '')}</td><td>${escapeHtml(l.uom || '')}</td><td>${moneyish(l.qty_issued || l.qty_requested || '')}</td></tr>`).join('');
-  return `<!doctype html><html><head><title>${escapeHtml(ticket.ticket_no)}</title><style>body{font-family:Arial,sans-serif;color:#111;margin:24px}.ticket{max-width:980px;margin:auto;border:2px solid #111;padding:18px}.title{text-align:center;font-weight:800;font-size:20px;margin-bottom:14px}.grid{display:grid;grid-template-columns:190px 1fr 190px 1fr;border-top:1px solid #111;border-left:1px solid #111}.grid div{padding:8px;border-right:1px solid #111;border-bottom:1px solid #111}.label{font-weight:700;background:#f1f1f1}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{border:1px solid #111;padding:7px;font-size:12px;vertical-align:top}th{background:#f1f1f1}.sign{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;margin-top:28px}.sign div{border-top:1px solid #111;padding-top:8px;text-align:center}.note{font-size:11px;margin-top:12px}@media print{button{display:none}.ticket{border:2px solid #000}}</style></head><body><div class="ticket"><div class="title">MATERIAL ISSUE TICKET (Issue Slip) — print / sign / file</div><div class="grid"><div class="label">Issue No (ISS-YYYY-####)</div><div>${escapeHtml(ticket.ticket_no)}</div><div class="label">Issue Date</div><div>${new Date(ticket.issued_at || ticket.created_at).toLocaleDateString()}</div><div class="label">Work Order / Job</div><div>${escapeHtml(ticket.work_order)}</div><div class="label">Department</div><div>${escapeHtml(ticket.department)}</div><div class="label">Request Ref (MR/Kit)</div><div>${escapeHtml(ticket.request_ref)}</div><div class="label">Return Expected? (Y/N)</div><div>${escapeHtml(ticket.return_expected)}</div><div class="label">Issued By (Stores)</div><div>${escapeHtml(ticket.issued_by)}</div><div class="label">Received By (Production)</div><div>${escapeHtml(ticket.received_by)}</div></div><table><thead><tr><th>S.No</th><th>Item Code</th><th>Part No</th><th>Description</th><th>Lot/Trace ID</th><th>From Bin</th><th>UOM</th><th>Qty Issued</th></tr></thead><tbody>${lineRows}</tbody></table><div class="sign"><div>Stores Signature</div><div>Production Signature</div><div>Verified By</div></div><p class="note">Generated from Stack n Stock Inventory OS. Status: ${escapeHtml(ticket.status)}. Notes: ${escapeHtml(ticket.notes)}</p></div></body></html>`;
+  const rows = [...lines, ...Array(Math.max(0, 8 - lines.length)).fill({})].map((l, i) => [i + 1, l.item_code || "", l.part_no || "", l.description || "", l.lot_trace_id || "", l.from_bin || "", l.uom || "", l.qty_issued || l.qty_requested || ""]);
+  return `${printMetaGrid([
+    ["Issue No", ticket.ticket_no],
+    ["Issue Date", printDate(ticket.issued_at || ticket.created_at)],
+    ["Work Order / Job", ticket.work_order],
+    ["Department", ticket.department],
+    ["Request Ref", ticket.request_ref],
+    ["Return Expected", ticket.return_expected],
+    ["Issued By", ticket.issued_by],
+    ["Received By", ticket.received_by],
+  ])}${printTable(["S.No", "Item Code", "Part No", "Description", "Lot/Trace ID", "From Bin", "UOM", "Qty Issued"], rows)}${printSignatures(["Stores Signature", "Production Signature", "Verified By"])}<p class="note">Status: ${escapeHtml(ticket.status)}. Notes: ${escapeHtml(ticket.notes || "")}</p>`;
 }
 
 function ticketExportRows() {
@@ -1101,6 +1508,7 @@ function exportWorkbookExcel() {
 }
 
 function bindEvents() {
+  installFormValidationMessages();
   document.querySelectorAll('.nav-btn').forEach((btn) => btn.addEventListener('click', () => { state.view = btn.dataset.view; document.querySelectorAll('.nav-btn').forEach((b) => b.classList.remove('active')); btn.classList.add('active'); renderAll(); }));
   $('searchInput').addEventListener('input', (e) => { state.search = e.target.value; renderAll(); });
   $('statusFilter').addEventListener('change', (e) => { state.status = e.target.value; renderAll(); });
@@ -1221,9 +1629,17 @@ function ticketNoFromMovement(m){
   const match = String(m.notes || '').match(/ISS-\d{4}-\d{4,}/i);
   return match ? match[0].toUpperCase() : (m.work_order ? `WO-${m.work_order}` : `LOG-${m.id}`);
 }
+
+function isIssueLogMovement(m){
+  const type = String(m.movement_type || '').toUpperCase();
+  const docText = [m.ticket_no, m.source_doc_no, m.work_order, m.notes].map((x) => String(x || '')).join(' ');
+  if (type === 'MIV_ISSUE' || /MIV[/-]\d{4}[/-]\d+/i.test(docText)) return false;
+  return ['PRODUCTION_ISSUE', 'PRODUCTION_TICKET_ISSUE'].includes(type);
+}
+
 function issueLogGroups(){
   const map = new Map();
-  for (const m of state.movements) {
+  for (const m of state.movements.filter(isIssueLogMovement)) {
     const no = ticketNoFromMovement(m);
     if (!map.has(no)) map.set(no, { ticket_no: no, movements: [], ticket: state.tickets.find((t) => t.ticket_no === no) });
     map.get(no).movements.push(m);
@@ -1259,10 +1675,18 @@ window.printIssueLog = function(ticketNo){
   const group = issueLogGroups().find((g) => g.ticket_no === ticketNo);
   if (!group) return;
   if (group.ticket) { printTicket(group.ticket.id); return; }
-  const w = window.open('', '_blank', 'width=980,height=760');
-  const rows = group.movements.map((m,i)=>`<tr><td>${i+1}</td><td>${escapeHtml(m.item_code)}</td><td>${escapeHtml(m.description)}</td><td>${escapeHtml(m.bin)}</td><td>${moneyish(m.qty_taken)}</td><td>${moneyish(m.qty_before)}</td><td>${moneyish(m.qty_after)}</td></tr>`).join('');
-  w.document.write(`<!doctype html><html><head><title>${escapeHtml(ticketNo)}</title><style>body{font-family:Arial;margin:24px;color:#111}.box{border:2px solid #111;padding:18px}h1{text-align:center;font-size:20px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #111;padding:7px;font-size:12px}th{background:#eee}.grid{display:grid;grid-template-columns:180px 1fr 180px 1fr;margin-bottom:14px}.grid div{border:1px solid #111;padding:7px}.label{font-weight:bold;background:#eee}</style></head><body><div class="box"><h1>MATERIAL ISSUE LOG</h1><div class="grid"><div class="label">Ticket / Log No</div><div>${escapeHtml(ticketNo)}</div><div class="label">Issue Date</div><div>${new Date(group.movements[0]?.created_at || Date.now()).toLocaleString()}</div></div><table><thead><tr><th>S.No</th><th>Item Code</th><th>Description</th><th>Bin</th><th>Qty Issued</th><th>Before</th><th>After</th></tr></thead><tbody>${rows}</tbody></table></div></body></html>`);
-  w.document.close(); w.focus(); setTimeout(()=>w.print(),300);
+  const first = group.movements[0] || {};
+  const total = group.movements.reduce((sum, m) => sum + Number(m.qty_taken || 0), 0);
+  const rows = group.movements.map((m, i) => [i + 1, m.item_code, m.description, m.bin, moneyish(m.qty_taken), moneyish(m.qty_before), moneyish(m.qty_after)]);
+  const content = `${printMetaGrid([
+    ["Ticket / Log No", ticketNo],
+    ["Issue Date", printDate(first.created_at || Date.now())],
+    ["Issued To", first.issued_to || ""],
+    ["Work Order", first.work_order || ""],
+    ["Line Count", group.movements.length],
+    ["Total Qty", moneyish(total)],
+  ])}${printTable(["S.No", "Item Code", "Description", "Bin", "Qty Issued", "Before", "After"], rows)}${printSignatures(["Stores Signature", "Production Signature", "Verified By"])}`;
+  openPrintDocument(ticketNo, "Material Issue Log", content);
 };
 
 function renderCart() {
@@ -1310,9 +1734,9 @@ async function raiseTicket(e) {
   const lines = valid.map((c) => { const item = state.inventory.find((x) => x.id === c.item_id); return normalizeTicketLine({ id: uid(), ticket_id: ticket.id, item_id: item.id, item_code: item.item_code, part_no: item.part_no, description: item.description, lot_trace_id: '', from_bin: item.bin, uom: item.uom, qty_requested: c.qty_requested, qty_issued: 0 }); });
   state.tickets.unshift(ticket); state.ticketLines.push(...lines); persistLocal();
   if (state.dbReady) {
-    const { error: tErr } = await state.supabase.from('material_issue_tickets').insert(dbSafeTicket(ticket));
+    const { error: tErr } = await withDbTimeout(state.supabase.from('material_issue_tickets').insert(dbSafeTicket(ticket)), "Ticket save").catch((err) => ({ error: err }));
     if (tErr) return setTicketMsg(`Ticket save failed: ${tErr.message}`, false);
-    const { error: lErr } = await state.supabase.from('material_issue_ticket_lines').insert(lines);
+    const { error: lErr } = await withDbTimeout(state.supabase.from('material_issue_ticket_lines').insert(lines), "Ticket line save").catch((err) => ({ error: err }));
     if (lErr) return setTicketMsg(`Ticket line save failed: ${lErr.message}`, false);
   }
   state.cart = [];
@@ -1320,7 +1744,7 @@ async function raiseTicket(e) {
   setTicketMsg(`Success: Ticket ${ticket.ticket_no} raised for Job ${ticket.work_order}. Total items: ${lines.length}. Stores will verify and issue.`, true);
   renderAll();
 }
-function setTicketMsg(msg, success=false) { if ($('ticketRequestMessage')) { $('ticketRequestMessage').textContent = msg; $('ticketRequestMessage').classList.toggle('success', !!success); } }
+function setTicketMsg(msg, success=false) { if ($('ticketRequestMessage')) { $('ticketRequestMessage').textContent = msg; $('ticketRequestMessage').classList.toggle('success', !!success); $('ticketRequestMessage').classList.toggle('error', !success && !!msg); } if (msg) showWorkflowMessage(msg, success); }
 
 document.addEventListener('click', (e) => {
   const th = e.target.closest('[data-bin-sort]');
@@ -1331,10 +1755,6 @@ document.addEventListener('click', (e) => {
   renderBins();
 });
 
-function ticketPrintHtml(ticket, lines) {
-  const lineRows = [...lines, ...Array(Math.max(0, 8 - lines.length)).fill({})].map((l, i) => `<tr><td>${i + 1}</td><td>${escapeHtml(l.item_code || '')}</td><td>${escapeHtml(l.part_no || '')}</td><td>${escapeHtml(l.description || '')}</td><td>${escapeHtml(l.lot_trace_id || '')}</td><td>${escapeHtml(l.from_bin || '')}</td><td>${escapeHtml(l.uom || '')}</td><td>${moneyish(l.qty_issued || l.qty_requested || '')}</td></tr>`).join('');
-  return `<!doctype html><html><head><title>${escapeHtml(ticket.ticket_no)}</title><style>body{font-family:Arial,sans-serif;color:#111;margin:24px}.ticket{max-width:980px;margin:auto;border:2px solid #111;padding:18px}.title{text-align:center;font-weight:800;font-size:20px;margin-bottom:14px}.grid{display:grid;grid-template-columns:190px 1fr 190px 1fr;border-top:1px solid #111;border-left:1px solid #111}.grid div{padding:8px;border-right:1px solid #111;border-bottom:1px solid #111}.label{font-weight:700;background:#f1f1f1}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{border:1px solid #111;padding:7px;font-size:12px;vertical-align:top}th{background:#f1f1f1}.sign{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;margin-top:28px}.sign div{border-top:1px solid #111;padding-top:8px;text-align:center}.note{font-size:11px;margin-top:12px}@media print{button{display:none}.ticket{border:2px solid #000}}</style></head><body><div class="ticket"><div class="title">MATERIAL ISSUE TICKET / ISSUE LOG</div><div class="grid"><div class="label">Issue No</div><div>${escapeHtml(ticket.ticket_no)}</div><div class="label">Issue Date</div><div>${new Date(ticket.issued_at || ticket.created_at).toLocaleDateString()}</div><div class="label">Work Order / Job</div><div>${escapeHtml(ticket.work_order)}</div><div class="label">Department</div><div>${escapeHtml(ticket.department)}</div><div class="label">Return Expected? (Y/N)</div><div>${escapeHtml(ticket.return_expected)}</div><div class="label">Status</div><div>${escapeHtml(ticket.status)}</div><div class="label">Issued By (Stores)</div><div>${escapeHtml(ticket.issued_by)}</div><div class="label">Received By (Production)</div><div>${escapeHtml(ticket.received_by)}</div></div><table><thead><tr><th>S.No</th><th>Item Code</th><th>Part No</th><th>Description</th><th>Lot/Trace ID</th><th>From Bin</th><th>UOM</th><th>Qty Issued</th></tr></thead><tbody>${lineRows}</tbody></table><div class="sign"><div>Stores Signature</div><div>Production Signature</div><div>Verified By</div></div><p class="note">Generated from Stack n Stock Inventory OS. Notes: ${escapeHtml(ticket.notes)}</p></div></body></html>`;
-}
 
 
 // ===== v6.5: return logs =====
@@ -1380,7 +1800,7 @@ function returnLogLinesFor(returnId){ return state.returnLogLines.filter((x)=>x.
 function returnExportRows(){ return state.returnLogs.map((r)=>({ ReturnNo:r.return_no, Date:r.return_date, SourceTicket:r.source_ticket_no, ReturnedBy:r.returned_by, ReturnedByEmail:r.returned_by_email, ReceivedBy:r.received_by, TotalQty:r.total_qty, ApprovalMailSent:r.approval_mail_sent ? 'Yes' : 'No', ApprovalMailSentAt:r.approval_mail_sent_at || '', ApprovalMailError:r.approval_mail_error || '', Notes:r.notes })); }
 function issueLogGroups(){
   const map = new Map();
-  const issueMoves = state.movements.filter((m)=>String(m.movement_type || '').toUpperCase() !== 'PRODUCTION_RETURN');
+  const issueMoves = state.movements.filter(isIssueLogMovement);
   for (const m of issueMoves) {
     const no = ticketNoFromMovement(m);
     if (!map.has(no)) map.set(no, { ticket_no: no, movements: [], ticket: state.tickets.find((t) => t.ticket_no === no) });
@@ -1416,7 +1836,7 @@ function buildReturnDraftLines(ticketNo){
     return normalizeReturnLogLine({ id: uid(), source_ticket_no: ticketNo, item_id: row.item_id, item_code: row.item_code, description: row.description, from_bin: row.from_bin, uom: row.uom || 'Nos', qty_issued: row.qty_issued, qty_already_returned: returned, qty_returnable: returnable, qty_returned: returnable > 0 ? returnable : 0 });
   }).filter((x)=>Number(x.qty_returnable || 0) > 0);
 }
-function setReturnMsg(msg, success=false){ if ($('returnMessage')) { $('returnMessage').textContent = msg || ''; $('returnMessage').classList.toggle('success', !!success); } }
+function setReturnMsg(msg, success=false){ if ($('returnMessage')) { $('returnMessage').textContent = msg || ''; $('returnMessage').classList.toggle('success', !!success); $('returnMessage').classList.toggle('error', !success && !!msg); } if (msg) showWorkflowMessage(msg, success); }
 window.onReturnSourceChange = function(ticketNo){ buildReturnDraftLines(ticketNo); renderReturnDraftLines(); };
 window.updateReturnDraftLine = function(id, value){ const line = state.returnDraftLines.find((x)=>x.id===id); if (!line) return; const num = Math.max(0, Math.min(Number(line.qty_returnable || 0), Number(value || 0))); line.qty_returned = num; renderReturnDraftLines(); };
 function renderReturnDraftLines(){
@@ -1530,17 +1950,17 @@ async function saveReturnLog(e){
     }
 
     if (state.dbReady) {
-      const { error: r1 } = await state.supabase.from('return_logs').insert(ret);
+      const { error: r1 } = await withDbTimeout(state.supabase.from('return_logs').insert(ret), "Return log save");
       if (r1) return setReturnMsg(`Return log save failed: ${r1.message}`, false);
 
-      const { error: r2 } = await state.supabase.from('return_log_lines').insert(lines);
+      const { error: r2 } = await withDbTimeout(state.supabase.from('return_log_lines').insert(lines), "Return line save");
       if (r2) return setReturnMsg(`Return lines save failed: ${r2.message}`, false);
 
-      const { error: r3 } = await state.supabase.from('stock_movements').insert(movements);
+      const { error: r3 } = await withDbTimeout(state.supabase.from('stock_movements').insert(movements), "Return movement save");
       if (r3) return setReturnMsg(`Stock movement save failed: ${r3.message}`, false);
 
       for (const item of updatedItems) {
-        const { error: itemErr } = await state.supabase.from('inventory_items').upsert(item);
+        const { error: itemErr } = await withDbTimeout(state.supabase.from('inventory_items').upsert(item), "Return inventory update");
         if (itemErr) return setReturnMsg(`Inventory update failed: ${itemErr.message}`, false);
       }
     }
@@ -1553,13 +1973,13 @@ async function saveReturnLog(e){
         if (mailErr) {
           ret.approval_mail_sent = false;
           ret.approval_mail_error = mailErr.message || String(mailErr);
-          await state.supabase
+          await withDbTimeout(state.supabase
             .from('return_logs')
             .update({
               approval_mail_sent: false,
               approval_mail_error: ret.approval_mail_error,
             })
-            .eq('id', ret.id);
+            .eq('id', ret.id), "Return mail status update");
           if ($('approvalMailStatus')) $('approvalMailStatus').value = 'Mail failed';
           setReturnMsg(`Return log ${ret.return_no} saved, but approval email failed: ${ret.approval_mail_error}`, false);
         } else {
@@ -1572,13 +1992,13 @@ async function saveReturnLog(e){
       } catch (mailErr) {
         ret.approval_mail_sent = false;
         ret.approval_mail_error = mailErr?.message || String(mailErr);
-        await state.supabase
+        await withDbTimeout(state.supabase
           .from('return_logs')
           .update({
             approval_mail_sent: false,
             approval_mail_error: ret.approval_mail_error,
           })
-          .eq('id', ret.id);
+          .eq('id', ret.id), "Return mail status update");
         if ($('approvalMailStatus')) $('approvalMailStatus').value = 'Mail failed';
         setReturnMsg(`Return log ${ret.return_no} saved, but approval email failed/timed out.`, false);
       }
@@ -1597,14 +2017,25 @@ async function saveReturnLog(e){
     }
     renderAll();
     setTimeout(() => $('returnModal')?.close(), 350);
+  } catch (err) {
+    setReturnMsg(errMsg(err), false);
   } finally {
     state.returnSaveInProgress = false;
     if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = originalText; }
   }
 }
 function returnLogHtml(ret, lines){
-  const rows = lines.map((l,i)=>`<tr><td>${i+1}</td><td>${escapeHtml(l.item_code)}</td><td>${escapeHtml(l.description)}</td><td>${escapeHtml(l.from_bin || '')}</td><td>${moneyish(l.qty_issued)}</td><td>${moneyish(l.qty_returned)}</td></tr>`).join('');
-  return `<!doctype html><html><head><title>${escapeHtml(ret.return_no)}</title><style>body{font-family:Arial,sans-serif;color:#111;margin:24px}.sheet{max-width:980px;margin:auto;border:2px solid #111;padding:18px}.title{text-align:center;font-size:22px;font-weight:800}.grid{display:grid;grid-template-columns:180px 1fr 180px 1fr;border-left:1px solid #111;border-top:1px solid #111;margin-top:12px}.grid div{border-right:1px solid #111;border-bottom:1px solid #111;padding:8px;font-size:12px}.label{font-weight:700;background:#eee}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{border:1px solid #111;padding:6px;font-size:12px}th{background:#eee}.sign{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:30px}.sign div{border-top:1px solid #111;padding-top:8px;text-align:center}.printbar{text-align:right;margin-bottom:10px}@media print{.printbar{display:none}}</style></head><body><div class="printbar"><button onclick="window.print()">Print Return Log</button></div><div class="sheet"><div class="title">MATERIAL RETURN LOG</div><div class="grid"><div class="label">Return No</div><div>${escapeHtml(ret.return_no)}</div><div class="label">Return Date</div><div>${escapeHtml(ret.return_date)}</div><div class="label">Source Ticket</div><div>${escapeHtml(ret.source_ticket_no)}</div><div class="label">Returned By</div><div>${escapeHtml(ret.returned_by)}</div><div class="label">Received By</div><div>${escapeHtml(ret.received_by)}</div><div class="label">Total Qty</div><div>${moneyish(ret.total_qty)}</div><div class="label">Notes</div><div>${escapeHtml(ret.notes || '-')}</div><div class="label">Generated By</div><div>${escapeHtml(ret.created_by_email || '-')}</div></div><table><thead><tr><th>S.No</th><th>Item Code</th><th>Description</th><th>Bin</th><th>Issued Qty</th><th>Returned Qty</th></tr></thead><tbody>${rows}</tbody></table><div class="sign"><div>Returned By</div><div>Inventory Received By</div></div></div></body></html>`;
+  const rows = lines.map((l, i) => [i + 1, l.item_code, l.description, l.from_bin || "", moneyish(l.qty_issued), moneyish(l.qty_returned)]);
+  return `${printMetaGrid([
+    ["Return No", ret.return_no],
+    ["Return Date", printDate(ret.return_date)],
+    ["Source Ticket", ret.source_ticket_no],
+    ["Returned By", ret.returned_by],
+    ["Returned By Email", ret.returned_by_email],
+    ["Received By", ret.received_by],
+    ["Total Qty", moneyish(ret.total_qty)],
+    ["Generated By", ret.created_by_email || ""],
+  ])}${printTable(["S.No", "Item Code", "Description", "Bin", "Issued Qty", "Returned Qty"], rows)}${printSignatures(["Returned By", "Inventory Received By", "Checked By"])}<p class="note">Notes: ${escapeHtml(ret.notes || "")}</p>`;
 }
 window.viewReturnLog = function(id){
   const ret = state.returnLogs.find((x)=>x.id===id); if (!ret) return;
@@ -1615,7 +2046,12 @@ window.viewReturnLog = function(id){
   $('returnPrintBtn').onclick = ()=>printReturnLog(id);
   $('returnDetailModal')?.showModal();
 };
-window.printReturnLog = function(id){ const ret = state.returnLogs.find((x)=>x.id===id); if (!ret) return; const lines = returnLogLinesFor(id); const w = window.open('', '_blank', 'width=980,height=760'); w.document.write(returnLogHtml(ret, lines)); w.document.close(); w.focus(); setTimeout(()=>w.print(), 300); };
+window.printReturnLog = function(id){
+  const ret = state.returnLogs.find((x)=>x.id===id);
+  if (!ret) return;
+  const lines = returnLogLinesFor(id);
+  openPrintDocument(ret.return_no, "Material Return Log", returnLogHtml(ret, lines));
+};
 window.deleteReturnLog = async function(id){
   const ret = state.returnLogs.find((x)=>x.id===id);
   if (!ret) return;
