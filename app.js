@@ -21,6 +21,39 @@ const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Mat
 const moneyish = (n) => Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
 const errMsg = (err) => err?.message || String(err || "Something went wrong.");
 const dbTimeoutMs = () => Number(window.SNS_DB_TIMEOUT_MS || 12000);
+const printLogoSrc = () => new URL("assets/stacknstock-logo.png", window.location.href).href;
+
+function printDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleDateString();
+}
+
+function printMetaGrid(rows) {
+  return `<div class="meta-grid">${rows.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value ?? "")}</strong></div>`).join("")}</div>`;
+}
+
+function printTable(headers, rows) {
+  return `<table><thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell ?? "")}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+}
+
+function printSignatures(labels = ["Prepared By", "Checked By", "Approved By"]) {
+  return `<div class="signatures">${labels.map((label) => `<div><span>${escapeHtml(label)}</span></div>`).join("")}</div>`;
+}
+
+function printDocumentHtml(title, subtitle, content) {
+  return `<!doctype html><html><head><title>${escapeHtml(title)}</title><style>
+    @page{size:A4;margin:14mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#111;margin:0;background:#fff}.sheet{max-width:1040px;margin:0 auto;border:2px solid #111;padding:18px;min-height:calc(297mm - 28mm)}.doc-head{display:grid;grid-template-columns:170px 1fr 170px;align-items:center;border-bottom:2px solid #111;padding-bottom:12px;gap:14px}.doc-head img{max-width:150px;max-height:48px;object-fit:contain}.doc-title{text-align:center}.doc-title h1{font-size:20px;margin:0;text-transform:uppercase;letter-spacing:.06em}.doc-title p{margin:5px 0 0;font-size:12px;color:#444}.print-meta{text-align:right;font-size:11px;color:#444}.meta-grid{display:grid;grid-template-columns:repeat(4,1fr);border-left:1px solid #111;border-top:1px solid #111;margin:16px 0}.meta-grid div{min-height:48px;border-right:1px solid #111;border-bottom:1px solid #111;padding:7px}.meta-grid span{display:block;font-size:10px;font-weight:700;text-transform:uppercase;color:#555;letter-spacing:.06em}.meta-grid strong{display:block;margin-top:4px;font-size:13px}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{border:1px solid #111;padding:7px;font-size:12px;vertical-align:top}th{background:#efefef;text-transform:uppercase;font-size:11px;letter-spacing:.04em}.signatures{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:42px}.signatures div{border-top:1px solid #111;text-align:center;padding-top:8px;font-size:12px}.label-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.store-label{break-inside:avoid;border:2px solid #111;padding:12px;min-height:148mm}.store-label h2{font-size:16px;margin:0 0 10px;text-align:center}.store-label .meta-grid{grid-template-columns:130px 1fr 130px 1fr;margin:8px 0}.store-label .meta-grid div{min-height:42px}.printbar{text-align:right;margin-bottom:10px}@media print{.printbar{display:none}.sheet{border:2px solid #000}.store-label{page-break-inside:avoid}}</style></head><body><div class="printbar"><button onclick="window.print()">Print</button></div><div class="sheet"><header class="doc-head"><img src="${printLogoSrc()}" alt="Stack n Stock" /><div class="doc-title"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(subtitle || "Generated from Stack n Stock Inventory OS")}</p></div><div class="print-meta">Printed<br>${new Date().toLocaleString()}</div></header>${content}</div></body></html>`;
+}
+
+function openPrintDocument(title, subtitle, content) {
+  const w = window.open("", "_blank", "width=1040,height=780");
+  if (!w) return alert("Allow pop-ups to print this document.");
+  w.document.write(printDocumentHtml(title, subtitle, content));
+  w.document.close();
+  w.focus();
+  setTimeout(() => w.print(), 350);
+}
 
 function showWorkflowMessage(message, ok = true) {
   if (!message) return;
@@ -76,6 +109,126 @@ function setSubmitBusy(form, busy, label = "Saving...") {
     btn.disabled = false;
     if (btn.dataset.originalText) btn.textContent = btn.dataset.originalText;
     delete btn.dataset.originalText;
+  }
+}
+
+function userProfileKey() {
+  const id = state.user?.id || state.user?.email || "local";
+  return `sns_user_profile_${id}`;
+}
+
+function storedUserProfile() {
+  try { return JSON.parse(localStorage.getItem(userProfileKey()) || "{}"); }
+  catch (_) { return {}; }
+}
+
+function currentUserProfile() {
+  const meta = state.user?.user_metadata || {};
+  const stored = storedUserProfile();
+  const email = state.user?.email || "";
+  const name = stored.name || meta.display_name || meta.full_name || meta.name || email.split("@")[0] || "User";
+  return { name, email, avatarData: stored.avatarData || meta.avatar_url || "" };
+}
+
+function initialsFor(name) {
+  return String(name || "U").trim().split(/\s+/).slice(0, 2).map((x) => x[0]).join("").toUpperCase() || "U";
+}
+
+function paintAvatar(el, profile) {
+  if (!el) return;
+  const avatar = profile?.avatarData || "";
+  el.textContent = initialsFor(profile?.name);
+  el.classList.toggle("has-image", !!avatar);
+  el.style.backgroundImage = avatar ? `url("${avatar}")` : "";
+}
+
+function renderUserIdentity() {
+  if (!state.user) return;
+  const profile = currentUserProfile();
+  if ($("userDisplayName")) $("userDisplayName").textContent = profile.name;
+  paintAvatar($("userAvatar"), profile);
+}
+
+function openUserSettings() {
+  if (!state.user) return;
+  const profile = currentUserProfile();
+  $("profileName").value = profile.name;
+  $("profileEmail").value = profile.email;
+  $("profilePassword").value = "";
+  $("profilePasswordConfirm").value = "";
+  state.pendingProfileAvatarData = profile.avatarData || "";
+  paintAvatar($("profileAvatarPreview"), profile);
+  setFormMessage("profileMessage", "", true);
+  $("userSettingsModal")?.showModal();
+}
+
+function readResizedProfileImage(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) return resolve("");
+    if (!/^image\//.test(file.type || "")) return reject(new Error("Select an image file for the profile pic."));
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read profile pic."));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Could not load profile pic."));
+      img.onload = () => {
+        const max = 180;
+        const ratio = Math.min(1, max / Math.max(img.width, img.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(img.width * ratio));
+        canvas.height = Math.max(1, Math.round(img.height * ratio));
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/jpeg", 0.72));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function handleProfilePicChange(e) {
+  try {
+    state.pendingProfileAvatarData = await readResizedProfileImage(e.target.files?.[0]);
+    paintAvatar($("profileAvatarPreview"), { name: $("profileName")?.value, avatarData: state.pendingProfileAvatarData });
+    setFormMessage("profileMessage", "Profile pic ready. Save profile to apply it.", true);
+  } catch (err) {
+    setFormMessage("profileMessage", errMsg(err), false);
+  }
+}
+
+async function saveUserSettings(e) {
+  e.preventDefault();
+  if (!state.user) return;
+  const form = e.currentTarget;
+  const name = $("profileName").value.trim() || currentUserProfile().name;
+  const email = $("profileEmail").value.trim();
+  const password = $("profilePassword").value;
+  const confirmPassword = $("profilePasswordConfirm").value;
+  if (password && password !== confirmPassword) return setFormMessage("profileMessage", "Passwords do not match.", false);
+  if (password && password.length < 6) return setFormMessage("profileMessage", "Password must be at least 6 characters.", false);
+  setSubmitBusy(form, true, "Saving...");
+  setFormMessage("profileMessage", "Saving profile...", true);
+  try {
+    const avatarData = state.pendingProfileAvatarData || currentUserProfile().avatarData || "";
+    const stored = { name, avatarData };
+    localStorage.setItem(userProfileKey(), JSON.stringify(stored));
+    if (state.dbReady && state.supabase?.auth?.updateUser) {
+      const attributes = { data: { ...(state.user.user_metadata || {}), display_name: name, full_name: name, avatar_url: avatarData } };
+      if (email && email !== state.user.email) attributes.email = email;
+      if (password) attributes.password = password;
+      const { data, error } = await state.supabase.auth.updateUser(attributes);
+      if (error) throw error;
+      state.user = data?.user || state.user;
+    }
+    renderUserIdentity();
+    setFormMessage("profileMessage", "Profile saved. Email changes may require confirmation.", true);
+    showWorkflowMessage("Profile saved.", true);
+    setTimeout(() => $("userSettingsModal")?.close(), 500);
+  } catch (err) {
+    setFormMessage("profileMessage", errMsg(err), false);
+    showWorkflowMessage(errMsg(err), false);
+  } finally {
+    setSubmitBusy(form, false);
   }
 }
 
@@ -308,6 +461,7 @@ async function refreshFromDatabase() {
   try {
     await loadData();
     renderAll();
+    renderUserIdentity();
   } finally {
     setLoadingState(false);
   }
@@ -650,6 +804,9 @@ function bindEvents() {
   $("authForm").addEventListener("submit", handleSignIn);
   $("signUpBtn").addEventListener("click", handleSignUp);
   $("signOutBtn").addEventListener("click", handleSignOut);
+  $("userProfileBtn")?.addEventListener("click", openUserSettings);
+  $("userSettingsForm")?.addEventListener("submit", saveUserSettings);
+  $("profilePicInput")?.addEventListener("change", handleProfilePicChange);
 }
 
 function openItemModal(item = null) {
@@ -986,6 +1143,7 @@ async function enterApp() {
       $('productionPortal').classList.add('hidden');
       $('appShell').classList.remove('hidden');
     }
+    renderUserIdentity();
     await refreshFromDatabase();
   })();
   try {
@@ -1296,16 +1454,21 @@ window.printTicket = (ticketId) => {
   const ticket = state.tickets.find((x) => x.id === ticketId);
   if (!ticket) return;
   const lines = ticketLines(ticketId);
-  const w = window.open('', '_blank', 'width=980,height=760');
-  w.document.write(ticketPrintHtml(ticket, lines));
-  w.document.close();
-  w.focus();
-  setTimeout(() => w.print(), 300);
+  openPrintDocument(ticket.ticket_no, "Material Issue Ticket", ticketPrintHtml(ticket, lines));
 };
 
 function ticketPrintHtml(ticket, lines) {
-  const lineRows = [...lines, ...Array(Math.max(0, 8 - lines.length)).fill({})].map((l, i) => `<tr><td>${i + 1}</td><td>${escapeHtml(l.item_code || '')}</td><td>${escapeHtml(l.part_no || '')}</td><td>${escapeHtml(l.description || '')}</td><td>${escapeHtml(l.lot_trace_id || '')}</td><td>${escapeHtml(l.from_bin || '')}</td><td>${escapeHtml(l.uom || '')}</td><td>${moneyish(l.qty_issued || l.qty_requested || '')}</td></tr>`).join('');
-  return `<!doctype html><html><head><title>${escapeHtml(ticket.ticket_no)}</title><style>body{font-family:Arial,sans-serif;color:#111;margin:24px}.ticket{max-width:980px;margin:auto;border:2px solid #111;padding:18px}.title{text-align:center;font-weight:800;font-size:20px;margin-bottom:14px}.grid{display:grid;grid-template-columns:190px 1fr 190px 1fr;border-top:1px solid #111;border-left:1px solid #111}.grid div{padding:8px;border-right:1px solid #111;border-bottom:1px solid #111}.label{font-weight:700;background:#f1f1f1}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{border:1px solid #111;padding:7px;font-size:12px;vertical-align:top}th{background:#f1f1f1}.sign{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;margin-top:28px}.sign div{border-top:1px solid #111;padding-top:8px;text-align:center}.note{font-size:11px;margin-top:12px}@media print{button{display:none}.ticket{border:2px solid #000}}</style></head><body><div class="ticket"><div class="title">MATERIAL ISSUE TICKET (Issue Slip) — print / sign / file</div><div class="grid"><div class="label">Issue No (ISS-YYYY-####)</div><div>${escapeHtml(ticket.ticket_no)}</div><div class="label">Issue Date</div><div>${new Date(ticket.issued_at || ticket.created_at).toLocaleDateString()}</div><div class="label">Work Order / Job</div><div>${escapeHtml(ticket.work_order)}</div><div class="label">Department</div><div>${escapeHtml(ticket.department)}</div><div class="label">Request Ref (MR/Kit)</div><div>${escapeHtml(ticket.request_ref)}</div><div class="label">Return Expected? (Y/N)</div><div>${escapeHtml(ticket.return_expected)}</div><div class="label">Issued By (Stores)</div><div>${escapeHtml(ticket.issued_by)}</div><div class="label">Received By (Production)</div><div>${escapeHtml(ticket.received_by)}</div></div><table><thead><tr><th>S.No</th><th>Item Code</th><th>Part No</th><th>Description</th><th>Lot/Trace ID</th><th>From Bin</th><th>UOM</th><th>Qty Issued</th></tr></thead><tbody>${lineRows}</tbody></table><div class="sign"><div>Stores Signature</div><div>Production Signature</div><div>Verified By</div></div><p class="note">Generated from Stack n Stock Inventory OS. Status: ${escapeHtml(ticket.status)}. Notes: ${escapeHtml(ticket.notes)}</p></div></body></html>`;
+  const rows = [...lines, ...Array(Math.max(0, 8 - lines.length)).fill({})].map((l, i) => [i + 1, l.item_code || "", l.part_no || "", l.description || "", l.lot_trace_id || "", l.from_bin || "", l.uom || "", l.qty_issued || l.qty_requested || ""]);
+  return `${printMetaGrid([
+    ["Issue No", ticket.ticket_no],
+    ["Issue Date", printDate(ticket.issued_at || ticket.created_at)],
+    ["Work Order / Job", ticket.work_order],
+    ["Department", ticket.department],
+    ["Request Ref", ticket.request_ref],
+    ["Return Expected", ticket.return_expected],
+    ["Issued By", ticket.issued_by],
+    ["Received By", ticket.received_by],
+  ])}${printTable(["S.No", "Item Code", "Part No", "Description", "Lot/Trace ID", "From Bin", "UOM", "Qty Issued"], rows)}${printSignatures(["Stores Signature", "Production Signature", "Verified By"])}<p class="note">Status: ${escapeHtml(ticket.status)}. Notes: ${escapeHtml(ticket.notes || "")}</p>`;
 }
 
 function ticketExportRows() {
@@ -1512,10 +1675,18 @@ window.printIssueLog = function(ticketNo){
   const group = issueLogGroups().find((g) => g.ticket_no === ticketNo);
   if (!group) return;
   if (group.ticket) { printTicket(group.ticket.id); return; }
-  const w = window.open('', '_blank', 'width=980,height=760');
-  const rows = group.movements.map((m,i)=>`<tr><td>${i+1}</td><td>${escapeHtml(m.item_code)}</td><td>${escapeHtml(m.description)}</td><td>${escapeHtml(m.bin)}</td><td>${moneyish(m.qty_taken)}</td><td>${moneyish(m.qty_before)}</td><td>${moneyish(m.qty_after)}</td></tr>`).join('');
-  w.document.write(`<!doctype html><html><head><title>${escapeHtml(ticketNo)}</title><style>body{font-family:Arial;margin:24px;color:#111}.box{border:2px solid #111;padding:18px}h1{text-align:center;font-size:20px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #111;padding:7px;font-size:12px}th{background:#eee}.grid{display:grid;grid-template-columns:180px 1fr 180px 1fr;margin-bottom:14px}.grid div{border:1px solid #111;padding:7px}.label{font-weight:bold;background:#eee}</style></head><body><div class="box"><h1>MATERIAL ISSUE LOG</h1><div class="grid"><div class="label">Ticket / Log No</div><div>${escapeHtml(ticketNo)}</div><div class="label">Issue Date</div><div>${new Date(group.movements[0]?.created_at || Date.now()).toLocaleString()}</div></div><table><thead><tr><th>S.No</th><th>Item Code</th><th>Description</th><th>Bin</th><th>Qty Issued</th><th>Before</th><th>After</th></tr></thead><tbody>${rows}</tbody></table></div></body></html>`);
-  w.document.close(); w.focus(); setTimeout(()=>w.print(),300);
+  const first = group.movements[0] || {};
+  const total = group.movements.reduce((sum, m) => sum + Number(m.qty_taken || 0), 0);
+  const rows = group.movements.map((m, i) => [i + 1, m.item_code, m.description, m.bin, moneyish(m.qty_taken), moneyish(m.qty_before), moneyish(m.qty_after)]);
+  const content = `${printMetaGrid([
+    ["Ticket / Log No", ticketNo],
+    ["Issue Date", printDate(first.created_at || Date.now())],
+    ["Issued To", first.issued_to || ""],
+    ["Work Order", first.work_order || ""],
+    ["Line Count", group.movements.length],
+    ["Total Qty", moneyish(total)],
+  ])}${printTable(["S.No", "Item Code", "Description", "Bin", "Qty Issued", "Before", "After"], rows)}${printSignatures(["Stores Signature", "Production Signature", "Verified By"])}`;
+  openPrintDocument(ticketNo, "Material Issue Log", content);
 };
 
 function renderCart() {
@@ -1584,10 +1755,6 @@ document.addEventListener('click', (e) => {
   renderBins();
 });
 
-function ticketPrintHtml(ticket, lines) {
-  const lineRows = [...lines, ...Array(Math.max(0, 8 - lines.length)).fill({})].map((l, i) => `<tr><td>${i + 1}</td><td>${escapeHtml(l.item_code || '')}</td><td>${escapeHtml(l.part_no || '')}</td><td>${escapeHtml(l.description || '')}</td><td>${escapeHtml(l.lot_trace_id || '')}</td><td>${escapeHtml(l.from_bin || '')}</td><td>${escapeHtml(l.uom || '')}</td><td>${moneyish(l.qty_issued || l.qty_requested || '')}</td></tr>`).join('');
-  return `<!doctype html><html><head><title>${escapeHtml(ticket.ticket_no)}</title><style>body{font-family:Arial,sans-serif;color:#111;margin:24px}.ticket{max-width:980px;margin:auto;border:2px solid #111;padding:18px}.title{text-align:center;font-weight:800;font-size:20px;margin-bottom:14px}.grid{display:grid;grid-template-columns:190px 1fr 190px 1fr;border-top:1px solid #111;border-left:1px solid #111}.grid div{padding:8px;border-right:1px solid #111;border-bottom:1px solid #111}.label{font-weight:700;background:#f1f1f1}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{border:1px solid #111;padding:7px;font-size:12px;vertical-align:top}th{background:#f1f1f1}.sign{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;margin-top:28px}.sign div{border-top:1px solid #111;padding-top:8px;text-align:center}.note{font-size:11px;margin-top:12px}@media print{button{display:none}.ticket{border:2px solid #000}}</style></head><body><div class="ticket"><div class="title">MATERIAL ISSUE TICKET / ISSUE LOG</div><div class="grid"><div class="label">Issue No</div><div>${escapeHtml(ticket.ticket_no)}</div><div class="label">Issue Date</div><div>${new Date(ticket.issued_at || ticket.created_at).toLocaleDateString()}</div><div class="label">Work Order / Job</div><div>${escapeHtml(ticket.work_order)}</div><div class="label">Department</div><div>${escapeHtml(ticket.department)}</div><div class="label">Return Expected? (Y/N)</div><div>${escapeHtml(ticket.return_expected)}</div><div class="label">Status</div><div>${escapeHtml(ticket.status)}</div><div class="label">Issued By (Stores)</div><div>${escapeHtml(ticket.issued_by)}</div><div class="label">Received By (Production)</div><div>${escapeHtml(ticket.received_by)}</div></div><table><thead><tr><th>S.No</th><th>Item Code</th><th>Part No</th><th>Description</th><th>Lot/Trace ID</th><th>From Bin</th><th>UOM</th><th>Qty Issued</th></tr></thead><tbody>${lineRows}</tbody></table><div class="sign"><div>Stores Signature</div><div>Production Signature</div><div>Verified By</div></div><p class="note">Generated from Stack n Stock Inventory OS. Notes: ${escapeHtml(ticket.notes)}</p></div></body></html>`;
-}
 
 
 // ===== v6.5: return logs =====
@@ -1858,8 +2025,17 @@ async function saveReturnLog(e){
   }
 }
 function returnLogHtml(ret, lines){
-  const rows = lines.map((l,i)=>`<tr><td>${i+1}</td><td>${escapeHtml(l.item_code)}</td><td>${escapeHtml(l.description)}</td><td>${escapeHtml(l.from_bin || '')}</td><td>${moneyish(l.qty_issued)}</td><td>${moneyish(l.qty_returned)}</td></tr>`).join('');
-  return `<!doctype html><html><head><title>${escapeHtml(ret.return_no)}</title><style>body{font-family:Arial,sans-serif;color:#111;margin:24px}.sheet{max-width:980px;margin:auto;border:2px solid #111;padding:18px}.title{text-align:center;font-size:22px;font-weight:800}.grid{display:grid;grid-template-columns:180px 1fr 180px 1fr;border-left:1px solid #111;border-top:1px solid #111;margin-top:12px}.grid div{border-right:1px solid #111;border-bottom:1px solid #111;padding:8px;font-size:12px}.label{font-weight:700;background:#eee}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{border:1px solid #111;padding:6px;font-size:12px}th{background:#eee}.sign{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:30px}.sign div{border-top:1px solid #111;padding-top:8px;text-align:center}.printbar{text-align:right;margin-bottom:10px}@media print{.printbar{display:none}}</style></head><body><div class="printbar"><button onclick="window.print()">Print Return Log</button></div><div class="sheet"><div class="title">MATERIAL RETURN LOG</div><div class="grid"><div class="label">Return No</div><div>${escapeHtml(ret.return_no)}</div><div class="label">Return Date</div><div>${escapeHtml(ret.return_date)}</div><div class="label">Source Ticket</div><div>${escapeHtml(ret.source_ticket_no)}</div><div class="label">Returned By</div><div>${escapeHtml(ret.returned_by)}</div><div class="label">Received By</div><div>${escapeHtml(ret.received_by)}</div><div class="label">Total Qty</div><div>${moneyish(ret.total_qty)}</div><div class="label">Notes</div><div>${escapeHtml(ret.notes || '-')}</div><div class="label">Generated By</div><div>${escapeHtml(ret.created_by_email || '-')}</div></div><table><thead><tr><th>S.No</th><th>Item Code</th><th>Description</th><th>Bin</th><th>Issued Qty</th><th>Returned Qty</th></tr></thead><tbody>${rows}</tbody></table><div class="sign"><div>Returned By</div><div>Inventory Received By</div></div></div></body></html>`;
+  const rows = lines.map((l, i) => [i + 1, l.item_code, l.description, l.from_bin || "", moneyish(l.qty_issued), moneyish(l.qty_returned)]);
+  return `${printMetaGrid([
+    ["Return No", ret.return_no],
+    ["Return Date", printDate(ret.return_date)],
+    ["Source Ticket", ret.source_ticket_no],
+    ["Returned By", ret.returned_by],
+    ["Returned By Email", ret.returned_by_email],
+    ["Received By", ret.received_by],
+    ["Total Qty", moneyish(ret.total_qty)],
+    ["Generated By", ret.created_by_email || ""],
+  ])}${printTable(["S.No", "Item Code", "Description", "Bin", "Issued Qty", "Returned Qty"], rows)}${printSignatures(["Returned By", "Inventory Received By", "Checked By"])}<p class="note">Notes: ${escapeHtml(ret.notes || "")}</p>`;
 }
 window.viewReturnLog = function(id){
   const ret = state.returnLogs.find((x)=>x.id===id); if (!ret) return;
@@ -1870,7 +2046,12 @@ window.viewReturnLog = function(id){
   $('returnPrintBtn').onclick = ()=>printReturnLog(id);
   $('returnDetailModal')?.showModal();
 };
-window.printReturnLog = function(id){ const ret = state.returnLogs.find((x)=>x.id===id); if (!ret) return; const lines = returnLogLinesFor(id); const w = window.open('', '_blank', 'width=980,height=760'); w.document.write(returnLogHtml(ret, lines)); w.document.close(); w.focus(); setTimeout(()=>w.print(), 300); };
+window.printReturnLog = function(id){
+  const ret = state.returnLogs.find((x)=>x.id===id);
+  if (!ret) return;
+  const lines = returnLogLinesFor(id);
+  openPrintDocument(ret.return_no, "Material Return Log", returnLogHtml(ret, lines));
+};
 window.deleteReturnLog = async function(id){
   const ret = state.returnLogs.find((x)=>x.id===id);
   if (!ret) return;

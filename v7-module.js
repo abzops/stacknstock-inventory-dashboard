@@ -1498,11 +1498,261 @@ renderAll = function() {
   }
 };
 
-window.printGRN = () => window.print();
-window.printMIV = () => window.print();
-window.printDeliveryChallan = () => window.print();
-window.printJobWork = () => window.print();
-window.printWIP = () => window.print();
+function printV7Document(title, subtitle, meta, headers, rows, signatures) {
+  openPrintDocument(title, subtitle, `${printMetaGrid(meta)}${printTable(headers, rows)}${printSignatures(signatures)}`);
+}
+
+function grnStoreLabel(grn, line) {
+  return `<section class="store-label"><h2>RECEIVING / STORE LABEL</h2>${printMetaGrid([
+    ["Part No.", line.item_code],
+    ["Description", line.description],
+    ["Qty", moneyish(line.accepted_qty || line.received_qty)],
+    ["UOM", line.uom],
+    ["Supplier", grn.supplier],
+    ["PO Ref", grn.po_no],
+    ["GRN No.", grn.grn_no],
+    ["Date Received", printDate(grn.grn_date)],
+    ["Supplier Lot/Batch", grn.invoice_no || "NA"],
+    ["Internal Trace ID", `${grn.grn_no}-${line.item_code}`],
+    ["Status", line.qc_status || grn.qc_status],
+    ["Bin ID", line.putaway_bin],
+  ])}${printSignatures(["Handled By", "Inspector / Stamp", "Store Manager"])}</section>`;
+}
+
+window.printGRN = function(id) {
+  const grn = state.grns.find((x) => x.id === id);
+  if (!grn) return;
+  const lines = rowsFor(id, state.grnLines, "grn_id");
+  const summary = printMetaGrid([
+    ["GRN No.", grn.grn_no],
+    ["Date Received", printDate(grn.grn_date)],
+    ["Supplier", grn.supplier],
+    ["PO Ref", grn.po_no],
+    ["Invoice No", grn.invoice_no],
+    ["Received By", grn.received_by],
+    ["QC Status", grn.qc_status],
+    ["Line Count", lines.length],
+  ]);
+  const labels = lines.map((line) => grnStoreLabel(grn, line)).join("");
+  openPrintDocument(grn.grn_no, "Receiving / Store Label", `${summary}<div class="label-grid">${labels}</div>`);
+};
+
+window.printMIV = function(id) {
+  const miv = state.mivs.find((x) => x.id === id);
+  if (!miv) return;
+  const lines = rowsFor(id, state.mivLines, "miv_id");
+  printV7Document(miv.miv_no, "Material Issue Voucher", [
+    ["MIV No", miv.miv_no],
+    ["MIV Date", printDate(miv.miv_date)],
+    ["Issued To", miv.issued_to],
+    ["Department", miv.department],
+    ["Work Order", miv.work_order],
+    ["Return Expected", miv.return_expected],
+    ["Issued By", miv.issued_by],
+    ["Received By", miv.received_by],
+  ], ["S.No", "Item Code", "Description", "UOM", "From Bin", "Qty Issued"], lines.map((l, i) => [i + 1, l.item_code, l.description, l.uom, l.from_bin, moneyish(l.qty_issued)]), ["Stores Signature", "Receiver Signature", "Verified By"]);
+};
+
+window.printDeliveryChallan = function(id) {
+  const dc = state.deliveryChallans.find((x) => x.id === id);
+  if (!dc) return;
+  const lines = rowsFor(id, state.deliveryChallanLines, "dc_id");
+  printV7Document(dc.dc_no, "Delivery Challan", [
+    ["DC No", dc.dc_no],
+    ["DC Date", printDate(dc.dc_date)],
+    ["Vendor", dc.vendor],
+    ["Linked Job Work", dc.linked_job_work_no],
+    ["Expected Return", printDate(dc.expected_return_date)],
+    ["Vehicle No", dc.vehicle_no],
+    ["Approx Value", moneyish(dc.approx_value)],
+    ["Status", dc.status],
+  ], ["S.No", "Item Code", "Description", "UOM", "Qty", "Rate", "Value"], lines.map((l, i) => [i + 1, l.item_code, l.description, l.uom, moneyish(l.qty), moneyish(l.rate), moneyish(l.value)]), ["Prepared By", "Vendor / Receiver", "Authorized By"]);
+};
+
+window.printJobWork = function(id) {
+  const job = state.jobWorks.find((x) => x.id === id);
+  if (!job) return;
+  const lines = rowsFor(id, state.jobWorkLines, "job_work_id");
+  printV7Document(job.job_work_no, "Outside Job Work", [
+    ["Job Work No", job.job_work_no],
+    ["Date Sent", printDate(job.date_sent)],
+    ["Vendor", job.vendor],
+    ["Delivery Challan", job.delivery_challan_no],
+    ["Expected Return", printDate(job.expected_return_date)],
+    ["Process", job.process_instruction],
+    ["Status", job.status],
+    ["Charges", moneyish(job.job_charges)],
+  ], ["S.No", "Source Item", "Description", "UOM", "Qty Sent", "Output Item", "Qty Received", "Wastage"], lines.map((l, i) => [i + 1, l.source_item_code, l.source_description, l.source_uom, moneyish(l.qty_sent), l.output_item_code, moneyish(l.qty_received), moneyish(l.wastage_qty)]), ["Stores Signature", "Vendor Signature", "QC / Verified By"]);
+};
+
+window.printWIP = function(id) {
+  const wip = state.wipConversions.find((x) => x.id === id);
+  if (!wip) return;
+  const lines = rowsFor(id, state.wipConversionLines, "wip_id");
+  printV7Document(wip.wip_no, "WIP / Conversion", [
+    ["WIP No", wip.wip_no],
+    ["Start Date", printDate(wip.start_date)],
+    ["Completion Date", printDate(wip.completion_date)],
+    ["Work Order", wip.work_order],
+    ["Process", wip.process_name],
+    ["Output Item", wip.output_item_code],
+    ["Output Qty", moneyish(wip.output_qty)],
+    ["Status", wip.status],
+  ], ["S.No", "Input Item", "Description", "UOM", "Qty Used", "Unit Cost", "Total Value"], lines.map((l, i) => [i + 1, l.input_item_code, l.input_description, l.input_uom, moneyish(l.qty_used), moneyish(l.unit_cost), moneyish(l.total_value)]), ["Production", "Stores", "Verified By"]);
+};
+
+function sameItemRef(row, code, itemId, codeFields = ["item_code"], idFields = ["item_id"]) {
+  return codeFields.some((field) => upper(row?.[field]) === code) || idFields.some((field) => itemId && String(row?.[field] || "") === String(itemId));
+}
+
+function removeRows(list, predicate) {
+  const removed = [];
+  const kept = [];
+  (list || []).forEach((row) => (predicate(row) ? removed : kept).push(row));
+  return { kept, removed };
+}
+
+function pruneHeaders(headers, lines, fk, touchedIds) {
+  const removed = [];
+  const kept = [];
+  (headers || []).forEach((header) => {
+    if (touchedIds.has(header.id) && !lines.some((line) => line[fk] === header.id)) removed.push(header);
+    else kept.push(header);
+  });
+  return { kept, removed };
+}
+
+function stripItemCodeText(text, code) {
+  return String(text || "")
+    .split(/[,\n+]+/)
+    .map((x) => x.trim())
+    .filter((x) => x && upper(x) !== code)
+    .join(", ");
+}
+
+function cascadeDeleteItemLocal(item) {
+  const code = upper(item.item_code);
+  const itemId = item.id;
+  const removed = {};
+
+  const grnLines = removeRows(state.grnLines, (x) => sameItemRef(x, code, itemId, ["item_code"], []));
+  removed.grnLineCount = grnLines.removed.length; state.grnLines = grnLines.kept;
+  const grnHeaders = pruneHeaders(state.grns, state.grnLines, "grn_id", new Set(grnLines.removed.map((x) => x.grn_id)));
+  removed.grnHeaderIds = grnHeaders.removed.map((x) => x.id); state.grns = grnHeaders.kept;
+
+  const mivLines = removeRows(state.mivLines, (x) => sameItemRef(x, code, itemId));
+  removed.mivLineCount = mivLines.removed.length; state.mivLines = mivLines.kept;
+  const mivHeaders = pruneHeaders(state.mivs, state.mivLines, "miv_id", new Set(mivLines.removed.map((x) => x.miv_id)));
+  removed.mivHeaderIds = mivHeaders.removed.map((x) => x.id); state.mivs = mivHeaders.kept;
+
+  const dcLines = removeRows(state.deliveryChallanLines, (x) => sameItemRef(x, code, itemId, ["item_code"], []));
+  removed.dcLineCount = dcLines.removed.length; state.deliveryChallanLines = dcLines.kept;
+  const dcHeaders = pruneHeaders(state.deliveryChallans, state.deliveryChallanLines, "dc_id", new Set(dcLines.removed.map((x) => x.dc_id)));
+  removed.dcHeaderIds = dcHeaders.removed.map((x) => x.id); state.deliveryChallans = dcHeaders.kept;
+
+  const jobLines = removeRows(state.jobWorkLines, (x) => sameItemRef(x, code, itemId, ["source_item_code", "output_item_code"], []));
+  removed.jobLineCount = jobLines.removed.length; state.jobWorkLines = jobLines.kept;
+  const jobHeaders = pruneHeaders(state.jobWorks, state.jobWorkLines, "job_work_id", new Set(jobLines.removed.map((x) => x.job_work_id)));
+  removed.jobHeaderIds = jobHeaders.removed.map((x) => x.id); state.jobWorks = jobHeaders.kept;
+
+  const wipLines = removeRows(state.wipConversionLines, (x) => sameItemRef(x, code, itemId, ["input_item_code"], []));
+  removed.wipLineCount = wipLines.removed.length; state.wipConversionLines = wipLines.kept;
+  const touchedWipIds = new Set(wipLines.removed.map((x) => x.wip_id));
+  const wipHeaders = removeRows(state.wipConversions, (x) => sameItemRef(x, code, itemId, ["output_item_code"], []) || (touchedWipIds.has(x.id) && !state.wipConversionLines.some((line) => line.wip_id === x.id)));
+  removed.wipHeaderIds = wipHeaders.removed.map((x) => x.id); state.wipConversions = wipHeaders.kept; state.wipConversionLines = state.wipConversionLines.filter((line) => !removed.wipHeaderIds.includes(line.wip_id));
+
+  const returnLines = removeRows(state.returnLogLines, (x) => sameItemRef(x, code, itemId));
+  removed.returnLineCount = returnLines.removed.length; state.returnLogLines = returnLines.kept;
+  const returnHeaders = pruneHeaders(state.returnLogs, state.returnLogLines, "return_id", new Set(returnLines.removed.map((x) => x.return_id)));
+  removed.returnHeaderIds = returnHeaders.removed.map((x) => x.id); state.returnLogs = returnHeaders.kept;
+
+  const ticketLines = removeRows(state.ticketLines, (x) => sameItemRef(x, code, itemId));
+  removed.ticketLineCount = ticketLines.removed.length; state.ticketLines = ticketLines.kept;
+  const ticketHeaders = pruneHeaders(state.tickets, state.ticketLines, "ticket_id", new Set(ticketLines.removed.map((x) => x.ticket_id)));
+  removed.ticketHeaderIds = ticketHeaders.removed.map((x) => x.id); state.tickets = ticketHeaders.kept;
+
+  removed.ledgerCount = state.stockLedger.filter((x) => sameItemRef(x, code, itemId)).length;
+  state.stockLedger = state.stockLedger.filter((x) => !sameItemRef(x, code, itemId));
+  removed.movementCount = state.movements.filter((x) => sameItemRef(x, code, itemId)).length;
+  state.movements = state.movements.filter((x) => !sameItemRef(x, code, itemId));
+  removed.quarantineCount = state.quarantine.filter((x) => sameItemRef(x, code, itemId, ["item_code"], [])).length;
+  state.quarantine = state.quarantine.filter((x) => !sameItemRef(x, code, itemId, ["item_code"], []));
+  removed.scrapCount = state.scrapLogs.filter((x) => sameItemRef(x, code, itemId, ["item_code"], [])).length;
+  state.scrapLogs = state.scrapLogs.filter((x) => !sameItemRef(x, code, itemId, ["item_code"], []));
+  removed.costLayerCount = state.itemCostLayers.filter((x) => sameItemRef(x, code, itemId, ["item_code"], [])).length;
+  state.itemCostLayers = state.itemCostLayers.filter((x) => !sameItemRef(x, code, itemId, ["item_code"], []));
+  state.reorderSettingsDb = state.reorderSettingsDb.filter((x) => !sameItemRef(x, code, itemId, ["item_code"], []));
+  delete state.reorderSettings?.[item.id]; delete state.reorderSettings?.[item.item_code];
+
+  const changedBins = [];
+  state.binLocations = state.binLocations.map((bin) => {
+    const next = stripItemCodeText(bin.current_item_codes, code);
+    if (next !== String(bin.current_item_codes || "")) { changedBins.push({ ...bin, current_item_codes: next }); return { ...bin, current_item_codes: next }; }
+    return bin;
+  });
+  removed.changedBins = changedBins;
+  state.inventory = state.inventory.filter((x) => x.id !== item.id && upper(x.item_code) !== code);
+  return removed;
+}
+
+async function deleteDbMatches(table, column, value) {
+  if (!state.dbReady || !state.user || !value) return;
+  const request = state.supabase.from(table).delete().eq(column, value);
+  const res = typeof withDbTimeout === "function" ? await withDbTimeout(request, `${table} delete`) : await request;
+  if (res?.error) throw new Error(`${table} delete failed: ${res.error.message}`);
+}
+
+async function cascadeDeleteItemDb(item, removed) {
+  const code = upper(item.item_code);
+  const itemId = item.id;
+  await deleteDbMatches("grn_lines", "item_code", code);
+  await deleteDbMatches("miv_lines", "item_code", code); await deleteDbMatches("miv_lines", "item_id", itemId);
+  await deleteDbMatches("delivery_challan_lines", "item_code", code);
+  await deleteDbMatches("job_work_lines", "source_item_code", code); await deleteDbMatches("job_work_lines", "output_item_code", code);
+  await deleteDbMatches("wip_conversion_lines", "input_item_code", code);
+  await deleteDbMatches("return_log_lines", "item_code", code); await deleteDbMatches("return_log_lines", "item_id", itemId);
+  await deleteDbMatches("material_issue_ticket_lines", "item_code", code); await deleteDbMatches("material_issue_ticket_lines", "item_id", itemId);
+  await deleteDbMatches("stock_ledger", "item_code", code);
+  await deleteDbMatches("stock_movements", "item_code", code); await deleteDbMatches("stock_movements", "item_id", itemId);
+  await deleteDbMatches("quarantine_items", "item_code", code);
+  await deleteDbMatches("scrap_register", "item_code", code);
+  await deleteDbMatches("item_cost_layers", "item_code", code);
+  await deleteDbMatches("reorder_settings", "item_code", code);
+  for (const id of removed.grnHeaderIds || []) await deleteDbMatches("grn_headers", "id", id);
+  for (const id of removed.mivHeaderIds || []) await deleteDbMatches("miv_headers", "id", id);
+  for (const id of removed.dcHeaderIds || []) await deleteDbMatches("delivery_challans", "id", id);
+  for (const id of removed.jobHeaderIds || []) await deleteDbMatches("job_work_headers", "id", id);
+  for (const id of removed.wipHeaderIds || []) await deleteDbMatches("wip_conversion_lines", "wip_id", id);
+  for (const id of removed.wipHeaderIds || []) await deleteDbMatches("wip_conversions", "id", id);
+  for (const id of removed.returnHeaderIds || []) await deleteDbMatches("return_logs", "id", id);
+  for (const id of removed.ticketHeaderIds || []) await deleteDbMatches("material_issue_tickets", "id", id);
+  await deleteDbMatches("inventory_items", "id", itemId); await deleteDbMatches("inventory_items", "item_code", code);
+  if (removed.changedBins?.length) await upsertRows("bin_locations", removed.changedBins);
+}
+
+window.confirmDeleteItem = (id) => {
+  const item = state.inventory.find((x) => x.id === id);
+  if (!item) return;
+  const ok = confirm(`Delete ${item.item_code} from Inventory Master and remove it from GRN, MIV, ledger, issue, return, job work, WIP, scrap, reorder, and quarantine records?\n\nThis cannot be undone.`);
+  if (ok) deleteItem(id);
+};
+
+deleteItem = async function(id) {
+  const item = state.inventory.find((x) => x.id === id);
+  if (!item) return;
+  const removed = cascadeDeleteItemLocal(item);
+  saveReorderSettings?.();
+  persistLocal();
+  renderAll();
+  const removedCount = Object.entries(removed).reduce((sum, [key, value]) => key.endsWith("Count") ? sum + Number(value || 0) : sum, 0);
+  showWorkflowMessage(`Deleted ${item.item_code}. Removed ${removedCount} related row(s) from linked tables.`, true);
+  try {
+    await cascadeDeleteItemDb(item, removed);
+  } catch (err) {
+    console.error(err);
+    showWorkflowMessage(`Deleted locally, but database cleanup failed: ${errMsg(err)}`, false);
+  }
+};
 
 function ledgerExportRows() { return state.stockLedger.map((r) => ({ Date: r.ledger_date, Movement: r.movement_type, Source: r.source_doc_type, DocNo: r.source_doc_no, ItemCode: r.item_code, Description: r.description, UOM: r.uom, InQty: r.in_qty, OutQty: r.out_qty, Before: r.qty_before, After: r.qty_after, FromBin: r.from_bin, ToBin: r.to_bin, UnitCost: r.unit_cost, TotalValue: r.total_value, Remarks: r.remarks })); }
 function grnExportRows() { return state.grnLines.map((l) => ({ ItemCode: l.item_code, Description: l.description, UOM: l.uom, Received: l.received_qty, Accepted: l.accepted_qty })); }

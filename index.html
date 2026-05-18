@@ -6,7 +6,7 @@
   <title>Stack n Stock | Inventory Dashboard</title>
   <link rel="icon" type="image/png" href="assets/favicon.png" />
   <link rel="apple-touch-icon" href="assets/favicon.png" />
-  <link rel="stylesheet" href="styles.css?v=20260517-top-errors" />
+  <link rel="stylesheet" href="styles.css?v=20260518-print-profile-cascade" />
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
@@ -139,6 +139,10 @@
           </div>
           <button class="ghost-btn" id="refreshDataBtn">Refresh Data</button>
           <button class="ghost-btn" id="exportExcelBtn">Export Excel</button>
+          <button class="user-chip" id="userProfileBtn" type="button" title="User settings">
+            <span class="user-avatar" id="userAvatar">U</span>
+            <span class="user-chip-text"><small>Signed in</small><strong id="userDisplayName">User</strong></span>
+          </button>
           <button class="ghost-btn" id="signOutBtn">Sign Out</button>
           <button class="primary-btn" id="openItemModal">+ Add Item</button>
         </div>
@@ -468,6 +472,21 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
     </main>
   </div>
 
+  <dialog id="userSettingsModal">
+    <form class="modal-card user-settings-card" id="userSettingsForm">
+      <div class="modal-head"><h3>User Settings</h3><button type="button" class="icon-btn" data-close="userSettingsModal">x</button></div>
+      <div class="profile-preview">
+        <span class="user-avatar large" id="profileAvatarPreview">U</span>
+        <label>Profile Pic<input id="profilePicInput" type="file" accept="image/*" /></label>
+      </div>
+      <label>Name<input id="profileName" autocomplete="name" /></label>
+      <label>Email<input id="profileEmail" type="email" autocomplete="email" /></label>
+      <div class="form-row"><label>New Password<input id="profilePassword" type="password" autocomplete="new-password" /></label><label>Confirm Password<input id="profilePasswordConfirm" type="password" autocomplete="new-password" /></label></div>
+      <div id="profileMessage" class="ticket-message muted hidden"></div>
+      <button class="primary-btn full" type="submit">Save Profile</button>
+    </form>
+  </dialog>
+
   <dialog id="itemModal">
     <form method="dialog" class="modal-card" id="itemForm">
       <div class="modal-head"><h3 id="itemModalTitle">Add Inventory Item</h3><button type="button" class="icon-btn" data-close="itemModal">×</button></div>
@@ -695,8 +714,8 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
   </dialog>
 
   <script src="config.js"></script>
-  <script src="app.js?v=20260517-login-stack-fix"></script>
-  <script src="v7-module.js?v=20260517-grn-code-gen"></script>
+  <script src="app.js?v=20260518-print-profile-cascade"></script>
+  <script src="v7-module.js?v=20260518-print-profile-cascade"></script>
   <script src="v8-module.js?v=20260517-login-stack-fix"></script>
 </body>
 </html>
