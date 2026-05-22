@@ -201,21 +201,97 @@
 
   function fillSelect(id, rows, placeholder, kind) {
     const el = $id(id);
-    if (!el || el.tagName !== "SELECT") return;
-    const current = up(el.value);
-    el.innerHTML = optionHtml(rows, placeholder, kind);
-    if (current && rows.some((r) => up(r.item_code) === current)) el.value = current;
+    if (!el) return;
+
+    // Handle SELECT elements (existing behavior)
+    if (el.tagName === "SELECT") {
+      const current = up(el.value);
+      el.innerHTML = optionHtml(rows, placeholder, kind);
+      if (current && rows.some((r) => up(r.item_code) === current)) el.value = current;
+      return;
+    }
+
+    // Handle INPUT elements with datalist (new behavior for searchable dropdowns)
+    if (el.tagName === "INPUT") {
+      const datalistId = `${id}Options`;
+      let datalist = $id(datalistId);
+      if (!datalist) {
+        datalist = document.createElement("datalist");
+        datalist.id = datalistId;
+        document.body.appendChild(datalist);
+      }
+
+      const emptyOption = `<option value="">${placeholder}</option>`;
+      const optionsHtml = rows.length
+        ? rows.map((r) => {
+            const qtyText = kind === "available items" ? `Avail ${fmt(r.available_qty)}` : `Issued ${fmt(r.qty_issued)}`;
+            const src = kind === "issued items" ? (r.source_labels || []).join(" + ") : r.source;
+            const doc = kind === "issued items" ? (r.source_docs || []).join(", ") : "";
+            const label = [r.item_code, r.description, r.uom, r.bin || r.from_bin, qtyText, src, doc].filter(Boolean).join(" | ");
+            return `<option value="${escapeHtml(r.item_code)}">${escapeHtml(label)}</option>`;
+          }).join("")
+        : `<option value="">No ${kind} found</option>`;
+
+      datalist.innerHTML = emptyOption + optionsHtml;
+      el.setAttribute("list", datalistId);
+      el.setAttribute("autocomplete", "off");
+
+      // Set placeholder if no value
+      if (!el.value && rows.length) {
+        el.placeholder = placeholder;
+      }
+
+      // Restore value if it exists in the new options
+      const current = up(el.value);
+      if (current && rows.some((r) => up(r.item_code) === current)) {
+        el.value = current;
+      }
+    }
   }
 
   function applySelectedToFields(selectId, fields) {
     const el = $id(selectId);
     if (!el) return;
     const run = () => {
-      const opt = el.selectedOptions && el.selectedOptions[0];
+      // Handle both SELECT and INPUT elements
+      let opt = null;
+      let value = "";
+
+      if (el.tagName === "SELECT") {
+        opt = el.selectedOptions && el.selectedOptions[0];
+        value = opt ? opt.value : "";
+      } else if (el.tagName === "INPUT") {
+        value = el.value;
+        // Find the corresponding option in datalist for data attributes
+        const datalistId = `${el.id}Options`;
+        const datalist = $id(datalistId);
+        if (datalist) {
+          const options = datalist.getElementsByTagName("option");
+          for (let i = 0; i < options.length; i++) {
+            if (options[i].value === value) {
+              opt = options[i];
+              break;
+            }
+          }
+        }
+      }
+
+      if (!opt && el.tagName === "INPUT" && value) {
+        // For INPUT, create a temporary object with the value
+        opt = { value, dataset: {} };
+      }
+
       if (!opt) return;
-      if (fields.description && $id(fields.description)) $id(fields.description).value = opt.dataset.desc || "";
-      if (fields.uom && $id(fields.uom)) $id(fields.uom).value = opt.dataset.uom || "";
-      if (fields.bin && $id(fields.bin)) $id(fields.bin).value = opt.dataset.bin || "";
+
+      if (fields.description && $id(fields.description)) {
+        $id(fields.description).value = opt.dataset.desc || "";
+      }
+      if (fields.uom && $id(fields.uom)) {
+        $id(fields.uom).value = opt.dataset.uom || "";
+      }
+      if (fields.bin && $id(fields.bin)) {
+        $id(fields.bin).value = opt.dataset.bin || "";
+      }
       if (fields.qty && $id(fields.qty)) {
         const q = n(opt.dataset.qty);
         $id(fields.qty).max = q || "";
@@ -229,9 +305,14 @@
         }
       }
     };
+
+    // Handle both change and input events for better UX
     el.removeEventListener("change", el.__snsV922Run || (() => {}));
+    el.removeEventListener("input", el.__snsV922RunInput || (() => {}));
     el.__snsV922Run = run;
+    el.__snsV922RunInput = run;
     el.addEventListener("change", run);
+    el.addEventListener("input", run);
   }
 
   function refreshAllDropdowns() {

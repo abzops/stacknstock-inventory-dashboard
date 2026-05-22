@@ -68,6 +68,8 @@ dialog#returnModal, dialog#returnDetailModal{width:min(1180px,96vw);max-width:11
 dialog#returnModal{max-height:94vh;overflow:hidden;}
 #returnForm.return-modal-card{width:100%;max-width:none;max-height:94vh;overflow:auto;padding:24px;}
 #returnForm .modal-head{position:sticky;top:0;z-index:4;background:#0d0d0d;padding-bottom:8px;}
+#returnForm .return-source-single{display:grid;grid-template-columns:1fr;gap:14px;}
+.return-source-hidden{display:none!important;}
 #returnForm .dc-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;}
 #returnForm label{min-width:0;}
 #returnForm input,#returnForm select{width:100%;min-height:50px;}
@@ -91,7 +93,7 @@ dialog#returnModal{max-height:94vh;overflow:hidden;}
 .return-empty-state{padding:18px;border:1px dashed #2f2f2f;border-radius:16px;color:var(--muted);text-align:center;}
 @media(max-width:960px){
   #returnForm.return-modal-card{padding:18px;}
-  #returnForm .dc-form-grid{grid-template-columns:1fr;}
+  #returnForm .dc-form-grid,#returnForm .return-source-single{grid-template-columns:1fr;}
   .return-line-card{grid-template-columns:1fr;}
   .return-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
 }
