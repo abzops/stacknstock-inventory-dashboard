@@ -313,6 +313,8 @@ function normalizeItem(row) {
     description: row.description || "",
     uom: row.uom || "",
     qty: Number(row.qty || 0),
+    price: Number(row.price || 0),
+    po_no: row.po_no || "",
     status: cleanStatus(row.status),
     bin: row.bin || "",
     part_no: row.part_no || "",
@@ -385,6 +387,257 @@ function normalizeMovement(row) {
 
 function isReorderItem(row) {
   return Number(row.qty || 0) < state.reorderThreshold;
+}
+
+async function checkItemHasTransactionHistory(itemId) {
+  if (!state.dbReady) return false;
+
+  try {
+    // Check stock movements
+    const { data: movements } = await state.supabase
+      .from("stock_movements")
+      .select("id")
+      .eq("item_id", itemId)
+      .limit(1);
+
+    if (movements && movements.length > 0) return true;
+
+    // Check material issue ticket lines
+    const { data: ticketLines } = await state.supabase
+      .from("material_issue_ticket_lines")
+      .select("id")
+      .eq("item_id", itemId)
+      .limit(1);
+
+    if (ticketLines && ticketLines.length > 0) return true;
+
+    // Check MIV lines
+    const { data: mivLines } = await state.supabase
+      .from("miv_lines")
+      .select("id")
+      .eq("item_id", itemId)
+      .limit(1);
+
+    if (mivLines && mivLines.length > 0) return true;
+
+    // Check GRN lines
+    const { data: grnLines } = await state.supabase
+      .from("grn_lines")
+      .select("id")
+      .eq("item_code", "") // We'll need to get the item_code first
+      .limit(1);
+
+    if (grnLines && grnLines.length > 0) return true;
+
+    // Check WIP conversion lines
+    const { data: wipLines } = await state.supabase
+      .from("wip_conversion_lines")
+      .select("id")
+      .eq("item_code", "") // We'll need to get the item_code first
+      .limit(1);
+
+    if (wipLines && wipLines.length > 0) return true;
+
+    // Check delivery challan lines
+    const { data: dcLines } = await state.supabase
+      .from("delivery_challan_lines")
+      .select("id")
+      .eq("item_code", "") // We'll need to get the item_code first
+      .limit(1);
+
+    if (dcLines && dcLines.length > 0) return true;
+
+    // Check scrap register
+    const { data: scrapLines } = await state.supabase
+      .from("scrap_register")
+      .select("id")
+      .eq("item_code", "") // We'll need to get the item_code first
+      .limit(1);
+
+    if (scrapLines && scrapLines.length > 0) return true;
+
+    // Get item details for code-based checks
+    const { data: itemData } = await state.supabase
+      .from("inventory_items")
+      .select("item_code")
+      .eq("id", itemId)
+      .single();
+
+    if (itemData) {
+      const itemCode = itemData.item_code;
+
+      // Re-check code-based tables with actual item code
+      const { data: grnLinesByCode } = await state.supabase
+        .from("grn_lines")
+        .select("id")
+        .eq("item_code", itemCode)
+        .limit(1);
+
+      if (grnLinesByCode && grnLinesByCode.length > 0) return true;
+
+      const { data: wipLinesByCode } = await state.supabase
+        .from("wip_conversion_lines")
+        .select("id")
+        .eq("item_code", itemCode)
+        .limit(1);
+
+      if (wipLinesByCode && wipLinesByCode.length > 0) return true;
+
+      const { data: dcLinesByCode } = await state.supabase
+        .from("delivery_challan_lines")
+        .select("id")
+        .eq("item_code", itemCode)
+        .limit(1);
+
+      if (dcLinesByCode && dcLinesByCode.length > 0) return true;
+
+      const { data: scrapLinesByCode } = await state.supabase
+        .from("scrap_register")
+        .select("id")
+        .eq("item_code", itemCode)
+        .limit(1);
+
+      if (scrapLinesByCode && scrapLinesByCode.length > 0) return true;
+    }
+
+    return false;
+  } catch (error) {
+    console.error("Error checking transaction history:", error);
+    // If we can't check, assume it has history to be safe
+    return true;
+  }
+}
+
+async function cleanBinRegisterReferences(itemId) {
+  if (!state.dbReady) return;
+
+  try {
+    // Get item details
+    const { data: itemData } = await state.supabase
+      .from("inventory_items")
+      .select("item_code")
+      .eq("id", itemId)
+      .single();
+
+    if (!itemData) return;
+
+    const itemCode = itemData.item_code;
+
+    // Find bins that reference this item
+    const { data: bins } = await state.supabase
+      .from("bin_locations")
+      .select("id, current_item_codes");
+
+    if (!bins || bins.length === 0) return;
+
+    // Update bins to remove references to deleted item
+    const updates = [];
+    for (const bin of bins) {
+      let currentCodes = bin.current_item_codes || "";
+      const codesArray = currentCodes
+        .split(",")
+        .map((code) => code.trim())
+        .filter((code) => code && code !== itemCode);
+
+      const newCodes = codesArray.join(", ").trim();
+
+      if (newCodes !== currentCodes) {
+        updates.push(
+          state.supabase
+            .from("bin_locations")
+            .update({ current_item_codes: newCodes, updated_at: new Date().toISOString() })
+            .eq("id", bin.id)
+        );
+      }
+    }
+
+    // Execute all updates
+    if (updates.length > 0) {
+      await Promise.all(updates);
+    }
+
+    // Also check for bins that have become empty (no item codes) and mark them as inactive
+    await checkAndMarkEmptyBinsInactive();
+  } catch (error) {
+    console.error("Error cleaning bin register references:", error);
+  }
+}
+
+async function checkAndMarkEmptyBinsInactive() {
+  if (!state.dbReady) {
+    // Work with local state if no DB connection
+    let updated = false;
+
+    for (const bin of state.binLocations) {
+      const currentCodes = bin.current_item_codes || "";
+      const hasCodes = currentCodes.trim() !== "";
+
+      if (!hasCodes && bin.status !== 'Inactive') {
+        bin.status = 'Inactive';
+        bin.updated_at = new Date().toISOString();
+        updated = true;
+      }
+    }
+
+    if (updated) {
+      persistLocal();
+      renderAll();
+    }
+    return;
+  }
+
+  try {
+    // Get all bins from database
+    const { data: bins, error } = await state.supabase
+      .from("bin_locations")
+      .select("id, current_item_codes, status");
+
+    if (error) throw error;
+
+    let updatePromises = [];
+    let emptyBinCount = 0;
+
+    for (const bin of bins) {
+      const currentCodes = bin.current_item_codes || "";
+      const hasCodes = currentCodes.trim() !== "";
+
+      if (!hasCodes && bin.status !== 'Inactive') {
+        emptyBinCount++;
+        const updatedBin = {
+          ...bin,
+          status: 'Inactive',
+          updated_at: new Date().toISOString()
+        };
+        updatePromises.push(
+          state.supabase
+            .from("bin_locations")
+            .update(updatedBin)
+            .eq("id", bin.id)
+        );
+      }
+    }
+
+    if (updatePromises.length > 0) {
+      // Execute all updates
+      await Promise.all(updatePromises);
+
+      // Update local state
+      state.binLocations = state.binLocations.map(bin => {
+        const currentCodes = bin.current_item_codes || "";
+        const hasCodes = currentCodes.trim() !== "";
+        if (!hasCodes && bin.status !== 'Inactive') {
+          return { ...bin, status: 'Inactive', updated_at: new Date().toISOString() };
+        }
+        return bin;
+      });
+
+      persistLocal();
+      renderAll();
+      // Note: Not showing a message here to avoid spam during item deletion
+    }
+  } catch (error) {
+    console.error('Error checking and marking empty bins inactive:', error);
+  }
 }
 
 async function init() {
@@ -583,12 +836,51 @@ async function saveItem(item) {
 }
 
 async function deleteItem(id) {
+  // Check if item has transaction history
+  const hasTransactionHistory = await checkItemHasTransactionHistory(id);
+
+  if (hasTransactionHistory) {
+    // Item has transaction history - mark as REJECTED instead of deleting
+    const itemToUpdate = state.inventory.find(x => x.id === id);
+    if (itemToUpdate) {
+      const updatedItem = { ...itemToUpdate, status: 'REJECT', updated_at: new Date().toISOString() };
+
+      // Update local state
+      state.inventory = state.inventory.map(x =>
+        x.id === id ? updatedItem : x
+      );
+
+      persistLocal();
+
+      if (state.dbReady) {
+        const { error } = await withDbTimeout(
+          state.supabase.from("inventory_items").upsert(updatedItem),
+          "Item status update"
+        );
+        if (error) alert(`Update failed: ${error.message}`);
+      }
+
+      // Clean bin register references
+      await cleanBinRegisterReferences(id);
+
+      renderAll();
+      showWorkflowMessage("Item marked as rejected due to transaction history.", true);
+      return;
+    }
+  }
+
+  // Item has no transaction history - safe to delete completely
   state.inventory = state.inventory.filter((x) => x.id !== id);
   persistLocal();
+
   if (state.dbReady) {
     const { error } = await state.supabase.from("inventory_items").delete().eq("id", id);
     if (error) alert(`Delete failed: ${error.message}`);
   }
+
+  // Clean bin register references
+  await cleanBinRegisterReferences(id);
+
   renderAll();
 }
 
@@ -638,6 +930,89 @@ async function deleteBin(id) {
     if (error) alert(`Bin delete failed: ${error.message}`);
   }
   renderAll();
+}
+
+async function makeVacuumBinsInactive() {
+  if (!state.dbReady) {
+    // Work with local state if no DB connection
+    const bins = state.binLocations;
+    let updated = false;
+
+    for (const bin of bins) {
+      if (bin.bin_type && String(bin.bin_type).toLowerCase().includes('vacuum')) {
+        if (bin.status !== 'Inactive') {
+          bin.status = 'Inactive';
+          bin.updated_at = new Date().toISOString();
+          updated = true;
+        }
+      }
+    }
+
+    if (updated) {
+      persistLocal();
+      renderAll();
+      showWorkflowMessage('Vacuum bins marked as inactive.', true);
+    } else {
+      showWorkflowMessage('No vacuum bins found or already inactive.', true);
+    }
+    return;
+  }
+
+  try {
+    // Get all bins from database
+    const { data: bins, error } = await state.supabase
+      .from("bin_locations")
+      .select("*");
+
+    if (error) throw error;
+
+    let updatePromises = [];
+    let vacuumBinCount = 0;
+
+    for (const bin of bins) {
+      if (bin.bin_type && String(bin.bin_type).toLowerCase().includes('vacuum')) {
+        vacuumBinCount++;
+        if (bin.status !== 'Inactive') {
+          const updatedBin = {
+            ...bin,
+            status: 'Inactive',
+            updated_at: new Date().toISOString()
+          };
+          updatePromises.push(
+            state.supabase
+              .from("bin_locations")
+              .update(updatedBin)
+              .eq("id", bin.id)
+          );
+        }
+      }
+    }
+
+    if (updatePromises.length > 0) {
+      // Execute all updates
+      await Promise.all(updatePromises);
+
+      // Update local state
+      state.binLocations = state.binLocations.map(bin => {
+        if (bin.bin_type && String(bin.bin_type).toLowerCase().includes('vacuum') && bin.status !== 'Inactive') {
+          return { ...bin, status: 'Inactive', updated_at: new Date().toISOString() };
+        }
+        return bin;
+      });
+
+      // Also check for bins that have become empty (no item codes) and mark them as inactive
+      await checkAndMarkEmptyBinsInactive();
+
+      persistLocal();
+      renderAll();
+      showWorkflowMessage(`Marked ${updatePromises.length} vacuum bins as inactive.`, true);
+    } else {
+      showWorkflowMessage(`No vacuum bins found to update (found ${vacuumBinCount} vacuum bins, all already inactive).`, true);
+    }
+  } catch (error) {
+    console.error('Error making vacuum bins inactive:', error);
+    showWorkflowMessage(`Failed to update vacuum bins: ${error.message}`, false);
+  }
 }
 
 async function issueToProduction(item, qtyTaken, issuedTo, workOrder, notes) {
@@ -818,6 +1193,8 @@ function openItemModal(item = null) {
   $("description").value = item?.description || "";
   $("uom").value = item?.uom || "";
   $("qty").value = item?.qty ?? "";
+  $("price").value = item?.price ?? "";
+  $("poNo").value = item?.po_no || "";
   $("status").value = item?.status || "OK";
   $("bin").value = item?.bin || "";
   $("partNo").value = item?.part_no || "";
@@ -886,7 +1263,7 @@ async function handleItemSubmit(e) {
   setSubmitBusy(form, true);
   setFormMessage("itemMessage", "Saving item...", true);
   try {
-    const item = await saveItem(normalizeItem({ id: $("itemId").value || uid(), supplier: $("supplier").value, item_code: $("itemCode").value, description: $("description").value, uom: $("uom").value, qty: $("qty").value, status: $("status").value, bin: $("bin").value, part_no: $("partNo").value }));
+    const item = await saveItem(normalizeItem({ id: $("itemId").value || uid(), supplier: $("supplier").value, item_code: $("itemCode").value, description: $("description").value, uom: $("uom").value, qty: $("qty").value, price: $("price").value, po_no: $("poNo").value, status: $("status").value, bin: $("bin").value, part_no: $("partNo").value }));
     const msg = `Success: ${item.item_code} saved.`;
     setFormMessage("itemMessage", msg, true);
     showWorkflowMessage(msg, true);
@@ -1015,7 +1392,7 @@ async function handleSignOut() {
 function setAuthMessage(msg) { $("authMessage").textContent = msg; }
 
 function inventoryExportRows() {
-  return filteredInventory().map((r) => ({ Supplier: r.supplier, "Item Code": r.item_code, Description: r.description, UOM: r.uom, Qty: r.qty, Status: r.status, Bin: r.bin, "Part No": r.part_no }));
+  return filteredInventory().map((r) => ({ Supplier: r.supplier, "Item Code": r.item_code, Description: r.description, UOM: r.uom, Qty: r.qty, Price: r.price, "PO No": r.po_no, Status: r.status, Bin: r.bin, "Part No": r.part_no }));
 }
 function quarantineExportRows() {
   return state.quarantine.map((r) => ({ "NCR No": r.ncr_no, "PO Ref": r.po_ref, Supplier: r.supplier, "Item Code": r.item_code, Description: r.description, "Qty Hold": r.qty_hold, Reason: r.reason, Status: r.status, Owner: r.owner, "Target Close": r.target_close || "" }));
@@ -1247,7 +1624,7 @@ function renderAll() {
 
 function renderInventory() {
   const rows = filteredInventory();
-  $('inventoryRows').innerHTML = rows.map((x) => `<tr><td>${escapeHtml(x.supplier)}</td><td><strong>${escapeHtml(x.item_code)}</strong><br><span class="muted">${escapeHtml(x.part_no || '')}</span></td><td>${escapeHtml(x.description)}</td><td>${escapeHtml(x.uom)}</td><td>${moneyish(x.qty)} ${isReorderItem(x) ? '<br><span class="reorder-chip">REORDER</span>' : ''}</td><td>${statusChip(x.status)}</td><td>${escapeHtml(x.bin)}</td><td><div class="row-actions"><button class="mini-btn" onclick="editItem('${x.id}')">Edit</button><button class="mini-btn danger" onclick="confirmDeleteItem('${x.id}')">Delete</button></div></td></tr>`).join('') || emptyRow(8);
+  $('inventoryRows').innerHTML = rows.map((x) => `<tr><td>${escapeHtml(x.supplier)}</td><td><strong>${escapeHtml(x.item_code)}</strong><br><span class="muted">${escapeHtml(x.part_no || '')}</span></td><td>${escapeHtml(x.description)}</td><td>${escapeHtml(x.uom)}</td><td>${moneyish(x.qty)} ${isReorderItem(x) ? '<br><span class="reorder-chip">REORDER</span>' : ''}</td><td>${moneyish(x.price)}</td><td>${escapeHtml(x.po_no)}</td><td>${statusChip(x.status)}</td><td>${escapeHtml(x.bin)}</td><td><div class="row-actions"><button class="mini-btn" onclick="editItem('${x.id}')">Edit</button><button class="mini-btn danger" onclick="confirmDeleteItem('${x.id}')">Delete</button></div></td></tr>`).join('') || emptyRow(10);
 }
 
 function renderReorder() {
@@ -1306,7 +1683,10 @@ function renderProductionPortal() {
   renderProductionSupplierFilter();
   const rows = productionInventoryRows();
   if ($('prodRecordCount')) $('prodRecordCount').textContent = `${rows.length} available items`;
-  if ($('prodInventoryRows')) $('prodInventoryRows').innerHTML = rows.map((x) => `<tr><td><strong>${escapeHtml(x.item_code)}</strong><br><span class="muted">${escapeHtml(x.part_no || '')}</span></td><td>${escapeHtml(x.description)}</td><td>${escapeHtml(x.supplier)}</td><td>${moneyish(x.qty)}</td><td>${escapeHtml(x.uom)}</td><td>${escapeHtml(x.bin)}</td><td><button class="primary-btn compact" onclick="addToCart('${x.id}')">Add to Cart</button></td></tr>`).join('') || emptyRow(7);
+  if ($('prodInventoryRows')) $('prodInventoryRows').innerHTML = rows.map((x) => {
+    const enhancedItem = typeof itemWithGrnPurchaseInfo === 'function' ? itemWithGrnPurchaseInfo(x) : x;
+    return `<tr><td><strong>${escapeHtml(enhancedItem.item_code)}</strong><br><span class="muted">${escapeHtml(enhancedItem.part_no || '')}</span></td><td>${escapeHtml(enhancedItem.description)}</td><td>${escapeHtml(enhancedItem.supplier)}</td><td>${escapeHtml(enhancedItem.po_no || '-')}</td><td>${moneyish(enhancedItem.qty)}</td><td>${escapeHtml(enhancedItem.uom)}</td><td>${escapeHtml(enhancedItem.bin)}</td><td><button class="primary-btn compact" onclick="addToCart('${enhancedItem.id}')">Add to Cart</button></td></tr>`;
+  }).join('') || emptyRow(8);
   renderCart();
 }
 
@@ -1892,7 +2272,7 @@ async function saveReturnLog(e){
   if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving...'; }
   try {
     const sourceTicket = $('returnSourceTicket')?.value || '';
-    if (!sourceTicket) return setReturnMsg('Select the source issue ticket.', false);
+    if (!sourceTicket) return setReturnMsg('Select the MIV No / Issue Ticket No.', false);
     const returnedByEmail = $('returnedByEmail')?.value?.trim() || '';
     if (!returnedByEmail) return setReturnMsg('Returned By Email is mandatory.', false);
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(returnedByEmail)) return setReturnMsg('Enter a valid Returned By Email address.', false);
@@ -1924,14 +2304,18 @@ async function saveReturnLog(e){
     });
     const lines = valid.map((l)=>normalizeReturnLogLine({ ...l, id: uid(), return_id: ret.id, qty_returned: Number(l.qty_returned || 0) }));
 
-    const updatedItems = [];
+    const updatedItemMap = new Map();
     const movements = [];
+    const ledgerReturnLines = [];
     for (const line of lines) {
       const item = state.inventory.find((x)=>x.id===line.item_id || x.item_code===line.item_code);
       if (!item) return setReturnMsg(`Inventory item not found for ${line.item_code}.`, false);
-      const before = Number(item.qty || 0);
+      const itemKey = item.id || item.item_code;
+      const currentItem = updatedItemMap.get(itemKey) || item;
+      const before = Number(currentItem.qty || 0);
       const after = before + Number(line.qty_returned || 0);
-      updatedItems.push({ ...item, qty: after, updated_at: now });
+      const updatedItem = normalizeItem({ ...currentItem, qty: after, updated_at: now });
+      updatedItemMap.set(itemKey, updatedItem);
       movements.push(normalizeMovement({
         id: uid(),
         item_id: item.id,
@@ -1947,7 +2331,9 @@ async function saveReturnLog(e){
         movement_type: 'PRODUCTION_RETURN',
         created_at: ret.created_at,
       }));
+      ledgerReturnLines.push({ line, item, qty: Number(line.qty_returned || 0) });
     }
+    const updatedItems = [...updatedItemMap.values()];
 
     if (state.dbReady) {
       const { error: r1 } = await withDbTimeout(state.supabase.from('return_logs').insert(ret), "Return log save");
@@ -1962,6 +2348,31 @@ async function saveReturnLog(e){
       for (const item of updatedItems) {
         const { error: itemErr } = await withDbTimeout(state.supabase.from('inventory_items').upsert(item), "Return inventory update");
         if (itemErr) return setReturnMsg(`Inventory update failed: ${itemErr.message}`, false);
+      }
+    }
+
+    if (typeof postLedgerEntry === 'function' && Array.isArray(state.stockLedger)) {
+      for (const { line, item, qty } of ledgerReturnLines) {
+        const hasLedgerHistory = state.stockLedger.some((entry) => String(entry.item_code || '').toUpperCase() === String(item.item_code || line.item_code || '').toUpperCase());
+        if (!hasLedgerHistory) continue;
+        await postLedgerEntry({
+          movement_type: 'MRN_RETURN',
+          source_doc_type: 'MRN',
+          source_doc_no: ret.return_no,
+          source_line_id: line.id,
+          item_id: item.id,
+          item_code: item.item_code,
+          description: item.description || line.description,
+          uom: item.uom || line.uom,
+          in_qty: qty,
+          to_bin: line.from_bin || item.bin,
+          work_order: ret.source_ticket_no,
+          department: ret.returned_by || 'Return',
+          remarks: ret.notes || `Return from ${ret.source_ticket_no}`,
+          created_by: state.user?.id || null,
+          created_by_email: state.user?.email || '',
+          created_at: ret.created_at,
+        });
       }
     }
 
@@ -2072,15 +2483,20 @@ This cannot be undone.`);
   state.returnDeleteInProgress = id;
   try {
     const now = new Date().toISOString();
-    const updatedItems = [];
+    const updatedItemMap = new Map();
     for (const line of lines) {
       const item = state.inventory.find((x)=>x.id===line.item_id || x.item_code===line.item_code);
       if (!item) continue;
-      const after = Math.max(0, Number(item.qty || 0) - Number(line.qty_returned || 0));
-      updatedItems.push(normalizeItem({ ...item, qty: after, updated_at: now }));
+      const itemKey = item.id || item.item_code;
+      const currentItem = updatedItemMap.get(itemKey) || item;
+      const after = Math.max(0, Number(currentItem.qty || 0) - Number(line.qty_returned || 0));
+      updatedItemMap.set(itemKey, normalizeItem({ ...currentItem, qty: after, updated_at: now }));
     }
+    const updatedItems = [...updatedItemMap.values()];
     const movementMatcher = (m) => String(m.movement_type || '').toUpperCase() === 'PRODUCTION_RETURN' && String(m.notes || '').startsWith(`Return ${ret.return_no} from `) && String(m.work_order || '') === String(ret.source_ticket_no || '');
     const movementIds = state.movements.filter(movementMatcher).map((m)=>m.id);
+    const ledgerMatcher = (l) => String(l.source_doc_type || '').toUpperCase() === 'MRN' && String(l.source_doc_no || '') === String(ret.return_no || '');
+    const ledgerIds = Array.isArray(state.stockLedger) ? state.stockLedger.filter(ledgerMatcher).map((l)=>l.id) : [];
 
     if (state.dbReady) {
       for (const item of updatedItems) {
@@ -2093,6 +2509,11 @@ This cannot be undone.`);
       const { error: movementErr } = await moveDelete;
       if (movementErr) throw new Error(`Movement delete failed: ${movementErr.message}`);
 
+      if (Array.isArray(state.stockLedger)) {
+        const { error: ledgerErr } = await state.supabase.from('stock_ledger').delete().eq('source_doc_type', 'MRN').eq('source_doc_no', ret.return_no);
+        if (ledgerErr && !/does not exist|schema cache|not found/i.test(ledgerErr.message || '')) throw new Error(`Ledger delete failed: ${ledgerErr.message}`);
+      }
+
       const { error: logErr } = await state.supabase.from('return_logs').delete().eq('id', id);
       if (logErr) throw new Error(`Return log delete failed: ${logErr.message}`);
     }
@@ -2104,6 +2525,7 @@ This cannot be undone.`);
     state.returnLogs = state.returnLogs.filter((x)=>x.id !== id);
     state.returnLogLines = state.returnLogLines.filter((x)=>x.return_id !== id);
     state.movements = state.movements.filter((m)=>!movementIds.includes(m.id));
+    if (Array.isArray(state.stockLedger)) state.stockLedger = state.stockLedger.filter((l)=>!ledgerIds.includes(l.id));
     persistLocal();
     renderAll();
     alert(`Deleted return log ${ret.return_no}. Removed ${lineCount} line(s) and reversed ${totalQty} qty from inventory.`);
@@ -2175,6 +2597,8 @@ bindEvents = function(){
   __v65_bindEvents();
   $('openReturnModalBtn')?.addEventListener('click', ()=>openReturnModal());
   $('returnSourceTicket')?.addEventListener('change', (e)=>onReturnSourceChange(e.target.value));
+  $('returnItemCode')?.addEventListener('input', onReturnItemChange);
+  $('returnItemCode')?.addEventListener('change', onReturnItemChange);
   $('returnForm')?.addEventListener('submit', saveReturnLog);
 };
 const __v65_exportTableExcel = exportTableExcel;

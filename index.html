@@ -6,7 +6,7 @@
   <title>Stack n Stock | Inventory Dashboard</title>
   <link rel="icon" type="image/png" href="assets/favicon.png" />
   <link rel="apple-touch-icon" href="assets/favicon.png" />
-  <link rel="stylesheet" href="styles.css?v=20260518-print-profile-cascade" />
+  <link rel="stylesheet" href="styles.css?v=20260522-return-issue-ticket-picker" />
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
@@ -63,7 +63,7 @@
         <div class="panel-head"><h3>Available Inventory</h3><span id="prodRecordCount">0 items</span></div>
         <div class="table-wrap tall">
           <table>
-            <thead><tr><th>Item Code</th><th>Description</th><th>Supplier</th><th>Available Qty</th><th>UOM</th><th>Bin</th><th>Action</th></tr></thead>
+            <thead><tr><th>Item Code</th><th>Description</th><th>Supplier</th><th>PO NO</th><th>Available Qty</th><th>UOM</th><th>Bin</th><th>Action</th></tr></thead>
             <tbody id="prodInventoryRows"></tbody>
           </table>
         </div>
@@ -232,7 +232,7 @@
           </div>
           <div class="table-wrap tall">
             <table>
-              <thead><tr><th>Supplier</th><th>Item Code</th><th>Description</th><th>UOM</th><th>Qty</th><th>Status</th><th>Bin</th><th>Actions</th></tr></thead>
+              <thead><tr><th>Supplier</th><th>Item Code</th><th>Description</th><th>UOM</th><th>Qty</th><th>Price</th><th>PO No</th><th>Status</th><th>Bin</th><th>Actions</th></tr></thead>
               <tbody id="inventoryRows"></tbody>
             </table>
           </div>
@@ -264,7 +264,7 @@
         <div class="panel">
           <div class="panel-head">
             <h3>Bin Location Register</h3>
-            <div class="panel-actions"><button class="ghost-btn compact" data-export-table="bins">Export Table</button><button class="ghost-btn compact" id="openBinModal">+ Add Bin</button><span id="binCount">0 bins</span></div>
+            <div class="panel-actions"><button class="ghost-btn compact" data-export-table="bins">Export Table</button><button class="ghost-btn compact" id="openBinModal">+ Add Bin</button><button class="ghost-btn compact" onclick="makeVacuumBinsInactive()">Mark Vacuum Bins Inactive</button><span id="binCount">0 bins</span></div>
           </div>
           <div id="binOverview" class="overview-grid"></div>
           <div class="table-wrap tall">
@@ -495,6 +495,8 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
       <label>Item Code<input id="itemCode" required /></label>
       <label>Description<textarea id="description" rows="3" required></textarea></label>
       <div class="form-row"><label>UOM<input id="uom" placeholder="Pcs / Nos / Mtr" /></label><label>Qty<input id="qty" type="number" step="0.01" required /></label></div>
+<div class="form-row"><label>Price<input id="price" type="number" step="0.01" min="0" placeholder="0.00" /></label></div>
+      <div class="form-row"><label>PO No<input id="poNo" /></label></div>
       <div class="form-row"><label>Status<select id="status"><option>OK</option><option>HOLD</option><option>REJECT</option><option>MRB</option></select></label><label>Bin<input id="bin" placeholder="R2-L4-B2" /></label></div>
       <label>Part No<input id="partNo" /></label>
       <div id="itemMessage" class="ticket-message muted hidden"></div>
@@ -566,9 +568,10 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
         <label>Return No <em>*</em><input id="returnNo" required /></label>
         <label>Return Date <em>*</em><input id="returnDate" type="date" required /></label>
       </div>
-      <div class="dc-form-grid">
-        <label>Source Issue Ticket <em>*</em><select id="returnSourceTicket" required></select></label>
-        <label>Item Code from MIV / Issue Logs<select id="returnItemCode"></select></label>
+      <div class="return-source-single">
+        <label>MIV No / Issue Ticket No <em>*</em><input id="returnItemCode" list="returnSourceDocumentOptions" autocomplete="off" placeholder="Search MIV no or issue ticket no" required /></label>
+        <datalist id="returnSourceDocumentOptions"></datalist>
+        <select id="returnSourceTicket" class="return-source-hidden" aria-hidden="true" tabindex="-1"></select>
       </div>
       <div class="dc-form-grid">
         <label>Returned By <em>*</em><input id="returnedBy" placeholder="Production / Department" required /></label>
@@ -641,7 +644,7 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
         <label>DC No<input id="dcNo" required /></label><label>DC Date<input id="dcDate" type="date" required /></label>
         <label>Vendor<input id="dcVendor" required /></label><label>Linked Job Work No<input id="dcJobWorkNo" /></label>
         <label>Expected Return<input id="dcExpectedReturn" type="date" /></label><label>Vehicle No<input id="dcVehicleNo" /></label>
-        <label>Item Code<select id="dcItemCode" required></select></label><label>Description<input id="dcDescription" /></label>
+        <label>Item Code<input id="dcItemCode" list="dcItemCodeOptions" autocomplete="off" required /></label><datalist id="dcItemCodeOptions"></datalist><label>Description<input id="dcDescription" /></label>
         <label>UOM<input id="dcUom" /></label><label>Qty<input id="dcQty" type="number" step="0.01" min="0.01" required /></label>
         <label>Rate<input id="dcRate" type="number" step="0.01" min="0" value="0" /></label><label>Status<select id="dcStatus"><option>OPEN</option><option>CLOSED</option></select></label>
       </div>
@@ -660,7 +663,7 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
         <label>Job Work No<input id="jobWorkNo" required /></label><label>Date Sent<input id="jobWorkDateSent" type="date" required /></label>
         <label>Vendor<input id="jobWorkVendor" required /></label><label>Delivery Challan No<input id="jobWorkDcNo" /></label>
         <label>Expected Return<input id="jobWorkExpectedReturn" type="date" required /></label><label>Process<input id="jobWorkProcess" /></label>
-        <label>Source Item Code<select id="jobWorkSourceItem" required></select></label><label>Source Description<input id="jobWorkSourceDesc" /></label>
+        <label>Source Item Code<input id="jobWorkSourceItem" list="jobWorkSourceItemOptions" autocomplete="off" required /></label><datalist id="jobWorkSourceItemOptions"></datalist><label>Source Description<input id="jobWorkSourceDesc" /></label>
         <label>UOM<input id="jobWorkUom" /></label><label>Qty Sent<input id="jobWorkQtySent" type="number" step="0.01" min="0.01" required /></label>
         <label>Output Item Code<input id="jobWorkOutputItem" /></label><label>Output Description<input id="jobWorkOutputDesc" /></label>
         <label>Qty Received<input id="jobWorkQtyReceived" type="number" step="0.01" min="0" value="0" /></label><label>Wastage Qty<input id="jobWorkWastage" type="number" step="0.01" min="0" value="0" /></label>
@@ -680,7 +683,7 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
       <div class="dc-form-grid">
         <label>WIP No<input id="wipNo" required /></label><label>Start Date<input id="wipStartDate" type="date" required /></label>
         <label>Work Order<input id="wipWorkOrder" /></label><label>Process Name<input id="wipProcessName" /></label>
-        <label>Input Item Code<select id="wipInputItem" required></select></label><label>Input Description<input id="wipInputDesc" /></label>
+        <label>Input Item Code<input id="wipInputItem" list="wipInputItemOptions" autocomplete="off" required /></label><datalist id="wipInputItemOptions"></datalist><label>Input Description<input id="wipInputDesc" /></label>
         <label>Input UOM<input id="wipInputUom" /></label><label>Qty Used<input id="wipQtyUsed" type="number" step="0.01" min="0.01" required /></label>
         <label>Input Unit Cost<input id="wipUnitCost" type="number" step="0.01" min="0" value="0" /></label><label>Output Item Code<input id="wipOutputItem" required /></label>
         <label>Output Description<input id="wipOutputDesc" /></label><label>Output UOM<input id="wipOutputUom" /></label>
@@ -701,7 +704,7 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
       <div class="dc-form-grid">
         <label>Scrap No<input id="scrapNo" required /></label><label>Scrap Date<input id="scrapDate" type="date" required /></label>
         <label>Source Type<input id="scrapSourceType" /></label><label>Source No<input id="scrapSourceNo" /></label>
-        <label>Item Code<select id="scrapItemCode" required></select></label><label>Description<input id="scrapDescription" /></label>
+        <label>Item Code<input id="scrapItemCode" list="scrapItemCodeOptions" autocomplete="off" required /></label><datalist id="scrapItemCodeOptions"></datalist><label>Description<input id="scrapDescription" /></label>
         <label>UOM<input id="scrapUom" /></label><label>Qty Scrapped<input id="scrapQty" type="number" step="0.01" min="0.01" required /></label>
         <label>Scrap Value<input id="scrapValue" type="number" step="0.01" min="0" value="0" /></label><label>Approved By<input id="scrapApprovedBy" /></label>
       </div>
@@ -714,8 +717,8 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
   </dialog>
 
   <script src="config.js"></script>
-  <script src="app.js?v=20260518-print-profile-cascade"></script>
-  <script src="v7-module.js?v=20260518-print-profile-cascade"></script>
+  <script src="app.js?v=20260523-production-po-safe"></script>
+  <script src="v7-module.js?v=20260522-grn-price-po"></script>
   <script src="v8-module.js?v=20260517-login-stack-fix"></script>
 </body>
 </html>

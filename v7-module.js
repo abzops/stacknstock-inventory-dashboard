@@ -519,6 +519,76 @@ async function addCostLayer(row) {
   return layer;
 }
 
+function returnLedgerEntryExists(ret, line) {
+  return (state.stockLedger || []).some((entry) =>
+    upper(entry.source_doc_type) === "MRN" &&
+    String(entry.source_doc_no || "") === String(ret.return_no || "") &&
+    String(entry.source_line_id || "") === String(line.id || "")
+  );
+}
+
+function ensureReturnLedgerEntries() {
+  if (!Array.isArray(state.stockLedger) || !Array.isArray(state.returnLogs) || !Array.isArray(state.returnLogLines)) return;
+  const repairedRows = [];
+  const touchedItems = new Map();
+
+  for (const ret of state.returnLogs) {
+    const lines = state.returnLogLines.filter((line) => line.return_id === ret.id);
+    for (const line of lines) {
+      const qty = v7Num(line.qty_returned);
+      if (qty <= 0 || returnLedgerEntryExists(ret, line)) continue;
+      if (!ledgerEntriesFor(line.item_code).length) continue;
+
+      const item = inventoryMasterItemByCode(line.item_code) || ensureInventoryItem({
+        item_code: line.item_code,
+        description: line.description,
+        uom: line.uom,
+        bin: line.from_bin,
+        qty: 0,
+      });
+      const before = calculateItemBalance(line.item_code);
+      const row = normalizeLedger({
+        id: `mrn-${line.id}`,
+        ledger_date: ret.return_date || todayISO(),
+        movement_type: "MRN_RETURN",
+        source_doc_type: "MRN",
+        source_doc_no: ret.return_no,
+        source_line_id: line.id,
+        item_id: item.id || line.item_id || "",
+        item_code: item.item_code || line.item_code,
+        description: item.description || line.description,
+        uom: item.uom || line.uom,
+        in_qty: qty,
+        to_bin: line.from_bin || item.bin || "",
+        work_order: ret.source_ticket_no || "",
+        department: ret.returned_by || "Return",
+        qty_before: before,
+        qty_after: before + qty,
+        remarks: ret.notes || `Return from ${ret.source_ticket_no || ret.return_no || ""}`,
+        created_by: ret.created_by || null,
+        created_by_email: ret.created_by_email || "",
+        created_at: ret.created_at || new Date().toISOString(),
+      });
+
+      state.stockLedger.unshift(row);
+      item.qty = row.qty_after;
+      item.updated_at = new Date().toISOString();
+      if (row.to_bin) item.bin = row.to_bin;
+      touchedItems.set(item.id || item.item_code, item);
+      repairedRows.push(row);
+    }
+  }
+
+  if (!repairedRows.length) return;
+  if (state.dbReady && state.user) {
+    queueV7DbSync({ method: "upsert", table: "stock_ledger", rows: repairedRows, label: "MRN return ledger repair" });
+    if (touchedItems.size) {
+      queueV7DbSync({ method: "upsert", table: "inventory_items", rows: [...touchedItems.values()], label: "MRN return inventory repair" });
+    }
+  }
+  persistLocal();
+}
+
 const v7PreviousLoadData = loadData;
 loadData = async function() {
   await v7PreviousLoadData();
@@ -854,7 +924,7 @@ function refreshIssuedItemDropdown() {
     const label = [item.item_code, item.description, item.uom, `Issued ${moneyish(item.qty_issued)}`, item.sources.join(" + ")].filter(Boolean).join(" | ");
     return `<option value="${escapeHtml(item.item_code)}">${escapeHtml(label)}</option>`;
   }).join("");
-  ["returnItemCode", "dcItemCode", "jobWorkSourceItem", "wipInputItem", "scrapItemCode"].forEach((id) => {
+  ["dcItemCode", "jobWorkSourceItem", "wipInputItem", "scrapItemCode"].forEach((id) => {
     const input = $(id);
     if (!input) return;
     const current = input.value;
@@ -867,6 +937,7 @@ function refreshIssuedItemDropdown() {
       input.setAttribute("list", "issuedItemCodeOptions");
     }
   });
+  refreshReturnDocumentDropdown();
 }
 
 function refreshReturnIssueItemDropdown() {
@@ -1249,7 +1320,7 @@ function mivSourceGroups() {
     const lines = state.mivLines.filter((line) => line.miv_id === miv.id);
     if (!lines.length) return null;
     const movements = lines.map((line) => normalizeMovement({ id: `miv-${line.id}`, item_id: line.item_id, item_code: line.item_code, description: line.description, bin: line.from_bin, qty_taken: line.qty_issued, qty_before: 0, qty_after: calculateItemBalance(line.item_code), issued_to: miv.issued_to || miv.department || "Production", work_order: miv.work_order || miv.source_ticket_no || "", notes: `MIV ${miv.miv_no}`, movement_type: "MIV_ISSUE", created_at: miv.created_at || miv.miv_date || new Date().toISOString() }));
-    return { ticket_no: miv.miv_no, movements, ticket: { ticket_no: miv.miv_no, work_order: miv.work_order, department: miv.department || miv.issued_to, status: miv.status, received_by: miv.received_by }, source_type: "MIV" };
+    return { ticket_no: miv.miv_no, movements, ticket: { ticket_no: miv.miv_no, source_ticket_no: miv.source_ticket_no, work_order: miv.work_order, department: miv.department || miv.issued_to, status: miv.status, received_by: miv.received_by }, source_type: "MIV" };
   }).filter(Boolean).sort((a, b) => new Date(b.movements[0]?.created_at || 0) - new Date(a.movements[0]?.created_at || 0));
 }
 
@@ -1258,13 +1329,74 @@ function issueAndMivSourceGroups() {
     .sort((a, b) => new Date(b.movements[0]?.created_at || 0) - new Date(a.movements[0]?.created_at || 0));
 }
 
+function issueTicketNumbersForReturnSource(group, miv = {}) {
+  const values = [
+    group.source_type === "MIV" ? miv.source_ticket_no : group.ticket_no,
+    group.ticket?.source_ticket_no,
+    group.ticket?.ticket_no,
+    ...group.movements.flatMap((movement) => [movement.ticket_no, movement.source_doc_no, movement.work_order, movement.notes]),
+  ];
+  return [...new Set(values.flatMap((value) => String(value || "").match(/ISS-\d{4}-\d+/gi) || []))]
+    .map((value) => value.toUpperCase());
+}
+
+function returnSourceDocumentRows() {
+  return issueAndMivSourceGroups().map((group) => {
+    const sourceNo = group.ticket_no || "";
+    const miv = group.source_type === "MIV"
+      ? state.mivs.find((row) => row.miv_no === sourceNo)
+      : state.mivs.find((row) => upper(row.source_ticket_no) === upper(sourceNo));
+    const mivNo = group.source_type === "MIV" ? sourceNo : (miv?.miv_no || "");
+    const ticketNo = group.source_type === "MIV" ? (miv?.source_ticket_no || "") : sourceNo;
+    const issueTicketNo = issueTicketNumbersForReturnSource(group, miv || {}).join(", ");
+    const date = group.movements[0]?.created_at || miv?.created_at || miv?.miv_date || "";
+    const searchText = [mivNo, ticketNo, issueTicketNo, sourceNo].join(" ").toLowerCase();
+    return { source_no: sourceNo, miv_no: mivNo, ticket_no: ticketNo, issue_ticket_no: issueTicketNo, date, searchText };
+  }).sort((a, b) => {
+    return new Date(b.date || 0) - new Date(a.date || 0);
+  });
+}
+
+function returnSourceDocumentLabel(row) {
+  return `${row.miv_no || "-"} | ${row.issue_ticket_no || row.ticket_no || "-"}`;
+}
+
+function returnSourceRowByValue(value) {
+  const key = upper(value);
+  if (!key) return null;
+  return returnSourceDocumentRows().find((row) => [row.source_no, row.miv_no, row.ticket_no, row.issue_ticket_no, returnSourceDocumentLabel(row)].some((part) => upper(part) === key)) || null;
+}
+
+function syncReturnSource(sourceNo, { updateInput = true } = {}) {
+  const hidden = $("returnSourceTicket");
+  if (hidden) {
+    hidden.innerHTML = returnSourceOptions(sourceNo);
+    hidden.value = sourceNo || "";
+  }
+  if (!updateInput) return;
+  const input = $("returnItemCode");
+  if (!input) return;
+  const row = returnSourceDocumentRows().find((item) => item.source_no === sourceNo);
+  input.value = row ? returnSourceDocumentLabel(row) : "";
+}
+
+function refreshReturnDocumentDropdown(selected = $("returnSourceTicket")?.value || returnSourceRowByValue($("returnItemCode")?.value || "")?.source_no || "") {
+  const input = $("returnItemCode");
+  const list = ensureDatalist("returnSourceDocumentOptions");
+  const rows = returnSourceDocumentRows();
+  list.innerHTML = rows.map((row) => `<option value="${escapeHtml(returnSourceDocumentLabel(row))}"></option>`).join("");
+  if (input) {
+    input.dataset.itemCodeInput = "";
+    input.dataset.issuedSource = "";
+    input.setAttribute("list", "returnSourceDocumentOptions");
+    input.placeholder = rows.length ? "Search MIV no or issue ticket no" : "No MIV / issue records";
+  }
+  syncReturnSource(selected, { updateInput: Boolean(selected) });
+}
+
 returnSourceOptions = function(selected = "") {
-  const groups = issueAndMivSourceGroups();
-  return `<option value="">Select source MIV / issue log</option>` + groups.map((g) => {
-    const label = g.source_type === "MIV" ? "MIV Register" : "Issue Log";
-    const detail = g.ticket?.work_order || g.movements[0]?.issued_to || "";
-    return `<option value="${escapeHtml(g.ticket_no)}" ${g.ticket_no === selected ? "selected" : ""}>${escapeHtml(g.ticket_no)} - ${escapeHtml(label)}${detail ? ` - ${escapeHtml(detail)}` : ""}</option>`;
-  }).join("");
+  const rows = returnSourceDocumentRows();
+  return `<option value="">Select source MIV / issue log</option>` + rows.map((row) => `<option value="${escapeHtml(row.source_no)}" ${row.source_no === selected ? "selected" : ""}>${escapeHtml(returnSourceDocumentLabel(row))}</option>`).join("");
 };
 
 aggregateIssueSource = function(ticketNo) {
@@ -1295,34 +1427,32 @@ function chooseSourceForReturnItem(itemCode) {
 const v7BaseBuildReturnDraftLines = buildReturnDraftLines;
 buildReturnDraftLines = function(ticketNo) {
   v7BaseBuildReturnDraftLines(ticketNo);
-  const itemCode = $("returnItemCode")?.value || "";
-  if (itemCode) state.returnDraftLines = state.returnDraftLines.filter((line) => upper(line.item_code) === upper(itemCode));
 };
 
 window.onReturnSourceChange = function(ticketNo) {
-  refreshIssuedItemDropdown();
+  refreshReturnDocumentDropdown(ticketNo);
   buildReturnDraftLines(ticketNo);
   renderReturnDraftLines();
 };
 
 function onReturnItemChange() {
-  const itemCode = $("returnItemCode")?.value || "";
-  const sourceNo = chooseSourceForReturnItem(itemCode);
-  if ($("returnSourceTicket") && sourceNo) $("returnSourceTicket").value = sourceNo;
-  buildReturnDraftLines(sourceNo);
+  const row = returnSourceRowByValue($("returnItemCode")?.value || "");
+  if (!row) {
+    syncReturnSource("", { updateInput: false });
+    state.returnDraftLines = [];
+    renderReturnDraftLines();
+    return;
+  }
+  syncReturnSource(row.source_no);
+  buildReturnDraftLines(row.source_no);
   renderReturnDraftLines();
 }
 
 const v7BaseOpenReturnModal = openReturnModal;
 openReturnModal = function(sourceTicket = "") {
-  refreshIssuedItemDropdown();
   v7BaseOpenReturnModal(sourceTicket);
-  refreshIssuedItemDropdown();
   const chosen = sourceTicket || $("returnSourceTicket")?.value || issueAndMivSourceGroups()[0]?.ticket_no || "";
-  if ($("returnSourceTicket")) {
-    $("returnSourceTicket").innerHTML = returnSourceOptions(chosen);
-    $("returnSourceTicket").value = chosen;
-  }
+  refreshReturnDocumentDropdown(chosen);
   buildReturnDraftLines(chosen);
   renderReturnDraftLines();
 };
@@ -1340,7 +1470,7 @@ window.forceOpenReturnModal = function(sourceTicket = "") {
 
 const v7PreviousOpenItemModal = openItemModal;
 openItemModal = function(item = null) {
-  v7PreviousOpenItemModal(item);
+  v7PreviousOpenItemModal(item ? itemWithGrnPurchaseInfo(item) : item);
   if ($("qty")) {
     $("qty").readOnly = !!item;
     $("qty").title = item ? "Stock is ledger-driven in V7. Use transactions to change stock." : "Opening stock posts an OPENING_STOCK ledger entry for new items.";
@@ -1355,7 +1485,7 @@ handleItemSubmit = async function(e) {
   try {
     const isNew = !$("itemId").value;
     const openingQty = v7Num($("qty").value);
-    const item = normalizeItem({ id: $("itemId").value || uid(), supplier: $("supplier").value, item_code: $("itemCode").value, description: $("description").value, uom: $("uom").value, qty: isNew ? 0 : calculateItemBalance($("itemCode").value), status: $("status").value, bin: $("bin").value, part_no: $("partNo").value });
+    const item = normalizeItem({ id: $("itemId").value || uid(), supplier: $("supplier").value, item_code: $("itemCode").value, description: $("description").value, uom: $("uom").value, qty: isNew ? 0 : calculateItemBalance($("itemCode").value), price: $("price").value, po_no: $("poNo").value, status: $("status").value, bin: $("bin").value, part_no: $("partNo").value });
     await saveItem(item);
     if (isNew && openingQty > 0) await postLedgerEntry({ movement_type: "OPENING_STOCK", source_doc_type: "OPENING", source_doc_no: `OPEN-${item.item_code}`, item_id: item.id, item_code: item.item_code, description: item.description, uom: item.uom, in_qty: openingQty, to_bin: item.bin, remarks: "Opening stock from item creation" });
     renderAll();
@@ -1444,10 +1574,67 @@ window.toggleReorderFlag = async function(id, checked) {
   saveReorderSettings(); persistLocal(); await upsertRows("reorder_settings", row).catch((err) => alert(err.message)); renderAll();
 };
 
-function stockRowsForDisplay() { return filteredInventory().map((item) => ({ ...item, qty: calculateItemBalance(item.item_code), available_qty: calculateAvailableStock(item.item_code) })); }
+function grnPurchaseRowsForItem(itemCode) {
+  const code = upper(itemCode);
+  if (!code) return [];
+  return (state.grnLines || [])
+    .filter((line) => upper(line.item_code) === code)
+    .map((line) => {
+      const grn = (state.grns || []).find((row) => row.id === line.grn_id) || {};
+      const accepted = v7Num(line.accepted_qty);
+      const unitRate = v7Num(line.unit_rate);
+      const landedCost = v7Num(line.landed_cost);
+      return {
+        po_no: grn.po_no || "",
+        price: unitRate > 0 ? unitRate : (accepted > 0 && landedCost > 0 ? landedCost / accepted : 0),
+        grn_no: grn.grn_no || "",
+        grnTime: Date.parse(grn.grn_date || "") || 0,
+        createdTime: Date.parse(line.created_at || grn.created_at || "") || 0,
+      };
+    })
+    .sort((a, b) => (b.grnTime - a.grnTime) || (b.createdTime - a.createdTime));
+}
+
+function grnPurchaseInfoForItem(itemCode) {
+  const rows = grnPurchaseRowsForItem(itemCode);
+  const poRow = rows.find((row) => row.po_no);
+  const priceRow = rows.find((row) => row.price > 0);
+  if (!poRow && !priceRow) return null;
+  return {
+    po_no: poRow?.po_no || "",
+    price: priceRow?.price || 0,
+    grn_no: poRow?.grn_no || priceRow?.grn_no || "",
+  };
+}
+
+function itemWithGrnPurchaseInfo(item) {
+  const grnInfo = grnPurchaseInfoForItem(item?.item_code);
+  if (!grnInfo) return item;
+  return {
+    ...item,
+    price: grnInfo.price > 0 ? grnInfo.price : item.price,
+    po_no: grnInfo.po_no || item.po_no,
+  };
+}
+
+function stockRowsForDisplay() {
+  return filteredInventory().map((item) => {
+    const purchaseItem = itemWithGrnPurchaseInfo(item);
+    return {
+      ...purchaseItem,
+      qty: calculateItemBalance(item.item_code),
+      available_qty: calculateAvailableStock(item.item_code),
+    };
+  });
+}
+
+inventoryExportRows = function() {
+  return stockRowsForDisplay().map((r) => ({ Supplier: r.supplier, "Item Code": r.item_code, Description: r.description, UOM: r.uom, Qty: r.qty, Price: r.price, "PO No": r.po_no, Status: r.status, Bin: r.bin, "Part No": r.part_no }));
+};
+
 renderInventory = function() {
   const rows = stockRowsForDisplay();
-  $("inventoryRows").innerHTML = rows.map((x) => `<tr><td>${escapeHtml(x.supplier)}</td><td><strong>${escapeHtml(x.item_code)}</strong><br><span class="muted">${escapeHtml(x.part_no || "")}</span></td><td>${escapeHtml(x.description)}</td><td>${escapeHtml(x.uom)}</td><td>${moneyish(x.available_qty)}${isReorderItem(x) ? '<br><span class="reorder-chip">REORDER</span>' : ""}<br><span class="muted">Ledger: ${moneyish(x.qty)}</span></td><td>${statusChip(x.status)}</td><td>${escapeHtml(x.bin)}</td><td><div class="row-actions"><button class="mini-btn" onclick="editItem('${x.id}')">Edit</button><button class="mini-btn danger" onclick="confirmDeleteItem('${x.id}')">Delete</button></div></td></tr>`).join("") || emptyRow(8);
+  $("inventoryRows").innerHTML = rows.map((x) => `<tr><td>${escapeHtml(x.supplier)}</td><td><strong>${escapeHtml(x.item_code)}</strong><br><span class="muted">${escapeHtml(x.part_no || "")}</span></td><td>${escapeHtml(x.description)}</td><td>${escapeHtml(x.uom)}</td><td>${moneyish(x.available_qty)}${isReorderItem(x) ? '<br><span class="reorder-chip">REORDER</span>' : ""}<br><span class="muted">Ledger: ${moneyish(x.qty)}</span></td><td>${moneyish(x.price)}</td><td>${escapeHtml(x.po_no || "")}</td><td>${statusChip(x.status)}</td><td>${escapeHtml(x.bin)}</td><td><div class="row-actions"><button class="mini-btn" onclick="editItem('${x.id}')">Edit</button><button class="mini-btn danger" onclick="confirmDeleteItem('${x.id}')">Delete</button></div></td></tr>`).join("") || emptyRow(10);
 };
 reorderRows = function() { return state.inventory.filter((x) => isReorderItem(x) || reorderDbFor(x)).sort((a, b) => calculateAvailableStock(a.item_code) - calculateAvailableStock(b.item_code)); };
 renderReorder = function() {
@@ -1483,11 +1670,13 @@ function renderCostSummary() { if ($("costRows")) { $("costLayerCount").textCont
 
 const v7PreviousRenderAll = renderAll;
 renderAll = function() {
+  ensureReturnLedgerEntries();
   recalculateInventoryBalances();
   v7PreviousRenderAll();
   refreshItemCodeDropdowns();
   refreshMivAvailableItemDropdown();
   refreshIssuedItemDropdown();
+  refreshReturnDocumentDropdown();
   renderGRNRegister(); renderMIVRegister(); renderDeliveryChallanRegister(); renderJobWorkRegister(); renderWIPRegister(); renderStockLedger(); renderScrapRegister(); renderCostSummary(); renderActionQueue(); renderV7DraftLines();
   if (state.team === "inventory") {
     document.querySelectorAll(".view").forEach((v) => v.classList.remove("active-view"));

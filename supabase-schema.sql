@@ -8,6 +8,8 @@ create table if not exists public.inventory_items (
   description text not null default '',
   uom text default '',
   qty numeric default 0,
+  price numeric default 0,
+  po_no text default '',
   status text not null default 'OK' check (status in ('OK','HOLD','REJECT','MRB')),
   bin text default '',
   part_no text default '',
