@@ -21,7 +21,7 @@ const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Mat
 const moneyish = (n) => Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
 const errMsg = (err) => err?.message || String(err || "Something went wrong.");
 const dbTimeoutMs = () => Number(window.SNS_DB_TIMEOUT_MS || 12000);
-const printLogoSrc = () => new URL("assets/stacknstock-logo.png", window.location.href).href;
+const printLogoSrc = () => new URL("Stacknstock logo.png", window.location.href).href;
 
 function printDate(value) {
   if (!value) return "";
@@ -43,7 +43,7 @@ function printSignatures(labels = ["Prepared By", "Checked By", "Approved By"]) 
 
 function printDocumentHtml(title, subtitle, content) {
   return `<!doctype html><html><head><title>${escapeHtml(title)}</title><style>
-    @page{size:A4;margin:14mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#111;margin:0;background:#fff}.sheet{max-width:1040px;margin:0 auto;border:2px solid #111;padding:18px;min-height:calc(297mm - 28mm)}.doc-head{display:grid;grid-template-columns:170px 1fr 170px;align-items:center;border-bottom:2px solid #111;padding-bottom:12px;gap:14px}.doc-head img{max-width:150px;max-height:48px;object-fit:contain}.doc-title{text-align:center}.doc-title h1{font-size:20px;margin:0;text-transform:uppercase;letter-spacing:.06em}.doc-title p{margin:5px 0 0;font-size:12px;color:#444}.print-meta{text-align:right;font-size:11px;color:#444}.meta-grid{display:grid;grid-template-columns:repeat(4,1fr);border-left:1px solid #111;border-top:1px solid #111;margin:16px 0}.meta-grid div{min-height:48px;border-right:1px solid #111;border-bottom:1px solid #111;padding:7px}.meta-grid span{display:block;font-size:10px;font-weight:700;text-transform:uppercase;color:#555;letter-spacing:.06em}.meta-grid strong{display:block;margin-top:4px;font-size:13px}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{border:1px solid #111;padding:7px;font-size:12px;vertical-align:top}th{background:#efefef;text-transform:uppercase;font-size:11px;letter-spacing:.04em}.signatures{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:42px}.signatures div{border-top:1px solid #111;text-align:center;padding-top:8px;font-size:12px}.label-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.store-label{break-inside:avoid;border:2px solid #111;padding:12px;min-height:148mm}.store-label h2{font-size:16px;margin:0 0 10px;text-align:center}.store-label .meta-grid{grid-template-columns:130px 1fr 130px 1fr;margin:8px 0}.store-label .meta-grid div{min-height:42px}.printbar{text-align:right;margin-bottom:10px}@media print{.printbar{display:none}.sheet{border:2px solid #000}.store-label{page-break-inside:avoid}}</style></head><body><div class="printbar"><button onclick="window.print()">Print</button></div><div class="sheet"><header class="doc-head"><img src="${printLogoSrc()}" alt="Stack n Stock" /><div class="doc-title"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(subtitle || "Generated from Stack n Stock Inventory OS")}</p></div><div class="print-meta">Printed<br>${new Date().toLocaleString()}</div></header>${content}</div></body></html>`;
+    @page{size:A4;margin:14mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#111;margin:0;background:#fff}.sheet{max-width:1040px;margin:0 auto;border:2px solid #111;padding:18px;min-height:calc(297mm - 28mm)}.doc-head{display:grid;grid-template-columns:220px 1fr 170px;align-items:center;border-bottom:2px solid #111;padding-bottom:12px;gap:14px}.doc-head img{max-width:210px;max-height:66px;object-fit:contain}.doc-title{text-align:center}.doc-title h1{font-size:20px;margin:0;text-transform:uppercase;letter-spacing:.06em}.doc-title p{margin:5px 0 0;font-size:12px;color:#444}.print-meta{text-align:right;font-size:11px;color:#444}.meta-grid{display:grid;grid-template-columns:repeat(4,1fr);border-left:1px solid #111;border-top:1px solid #111;margin:16px 0}.meta-grid div{min-height:48px;border-right:1px solid #111;border-bottom:1px solid #111;padding:7px}.meta-grid span{display:block;font-size:10px;font-weight:700;text-transform:uppercase;color:#555;letter-spacing:.06em}.meta-grid strong{display:block;margin-top:4px;font-size:13px}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{border:1px solid #111;padding:7px;font-size:12px;vertical-align:top}th{background:#efefef;text-transform:uppercase;font-size:11px;letter-spacing:.04em}.signatures{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:42px}.signatures div{border-top:1px solid #111;text-align:center;padding-top:8px;font-size:12px}.label-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.store-label{break-inside:avoid;border:2px solid #111;padding:12px;min-height:148mm}.store-label h2{font-size:16px;margin:0 0 10px;text-align:center}.store-label .meta-grid{grid-template-columns:130px 1fr 130px 1fr;margin:8px 0}.store-label .meta-grid div{min-height:42px}.printbar{text-align:right;margin-bottom:10px}@media print{.printbar{display:none}.sheet{border:2px solid #000}.store-label{page-break-inside:avoid}}</style></head><body><div class="printbar"><button onclick="window.print()">Print</button></div><div class="sheet"><header class="doc-head"><img data-print-logo src="${printLogoSrc()}" alt="Stack n Stock" /><div class="doc-title"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(subtitle || "Generated from Stack n Stock Inventory OS")}</p></div><div class="print-meta">Printed<br>${new Date().toLocaleString()}</div></header>${content}</div></body></html>`;
 }
 
 function openPrintDocument(title, subtitle, content) {
@@ -52,7 +52,21 @@ function openPrintDocument(title, subtitle, content) {
   w.document.write(printDocumentHtml(title, subtitle, content));
   w.document.close();
   w.focus();
-  setTimeout(() => w.print(), 350);
+  const printReady = () => setTimeout(() => w.print(), 120);
+  const logo = w.document.querySelector("[data-print-logo]");
+  if (logo && !logo.complete) {
+    let printed = false;
+    const safePrint = () => {
+      if (printed) return;
+      printed = true;
+      printReady();
+    };
+    logo.addEventListener("load", safePrint, { once: true });
+    logo.addEventListener("error", safePrint, { once: true });
+    setTimeout(safePrint, 1500);
+  } else {
+    printReady();
+  }
 }
 
 function showWorkflowMessage(message, ok = true) {
