@@ -21,7 +21,7 @@ const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Mat
 const moneyish = (n) => Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
 const errMsg = (err) => err?.message || String(err || "Something went wrong.");
 const dbTimeoutMs = () => Number(window.SNS_DB_TIMEOUT_MS || 12000);
-const printLogoSrc = () => new URL("assets/stacknstock-logo.png?v=20260523-print-logo-assets", window.location.href).href;
+const printLogoSrc = () => new URL("assets/full color-01.png?v=20260523-print-logo-full-color", window.location.href).href;
 
 function printDate(value) {
   if (!value) return "";
