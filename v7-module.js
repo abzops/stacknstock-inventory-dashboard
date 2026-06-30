@@ -54,7 +54,7 @@ function nextDocNo(prefix, rows, field) {
   return `${prefix}/${year}/${String(max + 1).padStart(4, "0")}`;
 }
 
-const GRN_ITEM_TYPES = ["MFG", "RM", "STD"];
+const GRN_ITEM_TYPES = ["MFG", "RM", "STD", "ELE"];
 
 function collectKnownItemCodes() {
   const codes = new Set();
@@ -92,7 +92,7 @@ function refreshGeneratedGrnItemCode(force = false) {
   if (!input) return "";
   if (!GRN_ITEM_TYPES.includes(type)) {
     input.value = "";
-    input.placeholder = "Select MFG / RM / STD";
+    input.placeholder = "Select MFG / RM / STD / ELE";
     return "";
   }
   const generated = nextGeneratedGrnItemCode(type);
@@ -132,7 +132,6 @@ function normalizeLedger(row) {
 }
 
 function normalizeGrn(row) {
-  const mailStatus = upper(row.grn_mail_status || (row.grn_mail_sent ? "SENT" : row.grn_mail_error ? "FAILED" : "PENDING"));
   return {
     id: row.id || uid(),
     grn_no: row.grn_no || nextDocNo("GRN", state.grns, "grn_no"),
@@ -144,10 +143,6 @@ function normalizeGrn(row) {
     received_by: row.received_by || "",
     qc_status: upper(row.qc_status || "PENDING"),
     remarks: row.remarks || "",
-    grn_mail_status: mailStatus,
-    grn_mail_sent: mailStatus === "SENT" || !!row.grn_mail_sent,
-    grn_mail_sent_at: row.grn_mail_sent_at || null,
-    grn_mail_error: row.grn_mail_error || "",
     created_by: row.created_by || null,
     created_by_email: row.created_by_email || "",
     created_at: row.created_at || new Date().toISOString(),
@@ -467,43 +462,6 @@ function queueV7DbSync(write, fromRetry = false) {
       }
       return { ok: false, error: err };
     });
-}
-
-function updateGrnMailState(grnId, patch, syncDb = true) {
-  const index = state.grns.findIndex((row) => row.id === grnId);
-  if (index < 0) return null;
-  const updated = normalizeGrn({ ...state.grns[index], ...patch, updated_at: new Date().toISOString() });
-  state.grns[index] = updated;
-  persistLocal();
-  if (syncDb && state.dbReady && state.user) {
-    queueV7DbSync({ method: "upsert", table: "grn_headers", rows: [updated], label: "GRN mail status update" });
-  }
-  return updated;
-}
-
-async function sendGrnMailWithTimeout(grnId, timeoutMs = 12000) {
-  if (!state.dbReady || !state.supabase?.functions) {
-    return { error: new Error("Supabase functions are not available") };
-  }
-  const mailPromise = state.supabase.functions.invoke("send-grn-mail", { body: { grn_id: grnId } });
-  const timeoutPromise = new Promise((resolve) => {
-    setTimeout(() => resolve({ error: new Error("GRN mail request timed out") }), timeoutMs);
-  });
-  return Promise.race([mailPromise, timeoutPromise]);
-}
-
-async function sendGrnMailAndTrack(grnId, options = {}) {
-  const grn = state.grns.find((row) => row.id === grnId);
-  if (!grn) return { ok: false, error: new Error("GRN not found") };
-  updateGrnMailState(grnId, { grn_mail_status: "PENDING", grn_mail_sent: false, grn_mail_error: "" }, false);
-  const { data, error } = await sendGrnMailWithTimeout(grnId, options.timeoutMs || 12000);
-  if (error || data?.ok === false) {
-    const errMsg = error?.message || data?.error || "Zoho Flow mail failed";
-    updateGrnMailState(grnId, { grn_mail_status: "FAILED", grn_mail_sent: false, grn_mail_error: errMsg });
-    return { ok: false, error: new Error(errMsg) };
-  }
-  updateGrnMailState(grnId, { grn_mail_status: "SENT", grn_mail_sent: true, grn_mail_sent_at: new Date().toISOString(), grn_mail_error: "" }, false);
-  return { ok: true, data };
 }
 
 function flushV7DbSyncQueue() {
@@ -1156,11 +1114,11 @@ async function saveGRN(e) {
     const received = v7Num($("grnReceivedQty").value);
     if (accepted + hold + rejected > received) throw new Error("Accepted + hold + rejected cannot exceed received quantity.");
     const grnItemType = upper($("grnItemType")?.value);
-    if (!GRN_ITEM_TYPES.includes(grnItemType)) throw new Error("Select item type MFG, RM, or STD before saving GRN.");
+    if (!GRN_ITEM_TYPES.includes(grnItemType)) throw new Error("Select item type MFG, RM, STD, or ELE before saving GRN.");
     const generatedItemCode = refreshGeneratedGrnItemCode(true);
     if (!generatedItemCode) throw new Error("Item code could not be generated. Select item type again.");
     const now = new Date().toISOString();
-    const grn = normalizeGrn({ id: uid(), grn_no: $("grnNo").value.trim(), grn_date: $("grnDate").value, po_no: $("grnPoNo").value, supplier: $("grnSupplier").value, invoice_no: $("grnInvoiceNo").value, received_by: $("grnReceivedBy").value, qc_status: $("grnQcStatus").value, remarks: $("grnRemarks").value, grn_mail_status: "PENDING", grn_mail_sent: false, grn_mail_sent_at: null, grn_mail_error: "", created_by: state.user?.id || null, created_by_email: state.user?.email || "", created_at: now, updated_at: now });
+    const grn = normalizeGrn({ id: uid(), grn_no: $("grnNo").value.trim(), grn_date: $("grnDate").value, po_no: $("grnPoNo").value, supplier: $("grnSupplier").value, invoice_no: $("grnInvoiceNo").value, received_by: $("grnReceivedBy").value, qc_status: $("grnQcStatus").value, remarks: $("grnRemarks").value, created_by: state.user?.id || null, created_by_email: state.user?.email || "", created_at: now, updated_at: now });
     const line = normalizeGrnLine({ id: uid(), grn_id: grn.id, item_code: generatedItemCode, description: $("grnDescription").value, uom: $("grnUom").value, received_qty: received, accepted_qty: accepted, hold_qty: hold, rejected_qty: rejected, putaway_bin: $("grnPutawayBin").value, unit_rate: $("grnUnitRate").value, landed_cost: accepted * v7Num($("grnUnitRate").value), qc_status: $("grnQcStatus").value, remarks: $("grnRemarks").value, created_at: now });
     state.grns.unshift(grn); state.grnLines.push(line);
     const grnHeaderSync = await insertRows("grn_headers", grn);
@@ -1173,22 +1131,8 @@ async function saveGRN(e) {
     }
     persistLocal();
     renderAll();
-    if (grnHeaderSync?.ok && grnLineSync?.ok) {
-      setV7Msg("grnMessage", `GRN ${grn.grn_no} saved. Sending mail...`, true);
-      const mailResult = await sendGrnMailAndTrack(grn.id);
-      renderAll();
-      if (mailResult.ok) {
-        setV7Msg("grnMessage", `GRN ${grn.grn_no} saved and mail sent.`, true);
-        setTimeout(() => $("grnModal")?.close(), 450);
-      } else {
-        setV7Msg("grnMessage", `GRN ${grn.grn_no} saved, but mail failed: ${mailResult.error?.message || "Zoho Flow failed"}`, false);
-      }
-    } else {
-      updateGrnMailState(grn.id, { grn_mail_status: "PENDING", grn_mail_sent: false, grn_mail_error: "Waiting for GRN database sync before mail can be sent." }, false);
-      renderAll();
-      setV7Msg("grnMessage", `GRN ${grn.grn_no} saved. Mail is pending until database sync completes.`, true);
-      setTimeout(() => $("grnModal")?.close(), 650);
-    }
+    setV7Msg("grnMessage", grnHeaderSync?.ok && grnLineSync?.ok ? `GRN ${grn.grn_no} saved.` : `GRN ${grn.grn_no} saved locally. Database sync is queued.`, true);
+    setTimeout(() => $("grnModal")?.close(), grnHeaderSync?.ok && grnLineSync?.ok ? 450 : 650);
   } catch (err) { setV7Msg("grnMessage", err.message, false); }
   finally { setSubmitBusy?.(form, false); }
 }
@@ -1721,14 +1665,7 @@ renderDashboard = function() {
 };
 
 function rowsFor(id, list, fk) { return list.filter((x) => x[fk] === id); }
-function grnMailCell(grn) {
-  const status = upper(grn.grn_mail_status || (grn.grn_mail_sent ? "SENT" : grn.grn_mail_error ? "FAILED" : "PENDING"));
-  const label = status === "SENT" ? "MAIL SENT" : status === "FAILED" ? "MAIL FAILED" : "PENDING";
-  const cls = status === "SENT" ? "OK" : status === "FAILED" ? "REJECT" : "HOLD";
-  const retry = status === "SENT" ? "" : `<button class="mini-btn" onclick="retryGrnMail('${grn.id}')">Retry</button>`;
-  return `<div class="return-action-row"><span class="status ${cls}" title="${escapeHtml(grn.grn_mail_error || "")}">${label}</span>${retry}</div>`;
-}
-function renderGRNRegister() { if ($("grnRows")) { $("grnCount").textContent = `${state.grns.length} GRNs`; $("grnRows").innerHTML = state.grns.map((g) => { const lines = rowsFor(g.id, state.grnLines, "grn_id"); return `<tr><td><strong>${escapeHtml(g.grn_no)}</strong></td><td>${escapeHtml(g.grn_date)}</td><td>${escapeHtml(g.supplier)}</td><td>${escapeHtml(g.po_no || "-")}</td><td>${lines.length}</td><td>${moneyish(lines.reduce((s, x) => s + x.accepted_qty, 0))}</td><td>${moneyish(lines.reduce((s, x) => s + x.hold_qty + x.rejected_qty, 0))}</td><td>${statusChip(g.qc_status)}</td><td>${grnMailCell(g)}</td><td><button class="mini-btn" onclick="printGRN('${g.id}')">Print</button></td></tr>`; }).join("") || emptyRow(10); } }
+function renderGRNRegister() { if ($("grnRows")) { $("grnCount").textContent = `${state.grns.length} GRNs`; $("grnRows").innerHTML = state.grns.map((g) => { const lines = rowsFor(g.id, state.grnLines, "grn_id"); return `<tr><td><strong>${escapeHtml(g.grn_no)}</strong></td><td>${escapeHtml(g.grn_date)}</td><td>${escapeHtml(g.supplier)}</td><td>${escapeHtml(g.po_no || "-")}</td><td>${lines.length}</td><td>${moneyish(lines.reduce((s, x) => s + x.accepted_qty, 0))}</td><td>${moneyish(lines.reduce((s, x) => s + x.hold_qty + x.rejected_qty, 0))}</td><td>${statusChip(g.qc_status)}</td><td><button class="mini-btn" onclick="printGRN('${g.id}')">Print</button></td></tr>`; }).join("") || emptyRow(9); } }
 function renderMIVRegister() { if ($("mivRows")) { $("mivCount").textContent = `${state.mivs.length} MIVs`; $("mivRows").innerHTML = state.mivs.map((m) => { const lines = rowsFor(m.id, state.mivLines, "miv_id"); return `<tr><td><strong>${escapeHtml(m.miv_no)}</strong></td><td>${escapeHtml(m.miv_date)}</td><td>${escapeHtml(m.source_ticket_no || "-")}</td><td>${escapeHtml(m.issued_to)}</td><td>${escapeHtml(m.work_order)}</td><td>${lines.length}</td><td>${moneyish(lines.reduce((s, x) => s + x.qty_issued, 0))}</td><td>${statusChip(m.status)}</td><td><button class="mini-btn" onclick="printMIV('${m.id}')">Print</button></td></tr>`; }).join("") || emptyRow(9); } }
 function renderDeliveryChallanRegister() { if ($("dcRows")) { $("dcCount").textContent = `${state.deliveryChallans.length} DCs`; $("dcRows").innerHTML = state.deliveryChallans.map((dc) => { const lines = rowsFor(dc.id, state.deliveryChallanLines, "dc_id"); return `<tr><td><strong>${escapeHtml(dc.dc_no)}</strong></td><td>${escapeHtml(dc.dc_date)}</td><td>${escapeHtml(dc.vendor)}</td><td>${escapeHtml(dc.linked_job_work_no || "-")}</td><td>${escapeHtml(dc.expected_return_date || "-")}</td><td>${moneyish(lines.reduce((s, x) => s + x.qty, 0))}</td><td>${moneyish(dc.approx_value)}</td><td>${statusChip(dc.status)}</td><td><button class="mini-btn" onclick="printDeliveryChallan('${dc.id}')">Print</button></td></tr>`; }).join("") || emptyRow(9); } }
 function renderJobWorkRegister() { if ($("jobWorkRows")) { $("jobWorkCount").textContent = `${state.jobWorks.length} jobs`; $("jobWorkRows").innerHTML = state.jobWorks.map((j) => { const line = rowsFor(j.id, state.jobWorkLines, "job_work_id")[0] || {}; return `<tr><td><strong>${escapeHtml(j.job_work_no)}</strong></td><td>${escapeHtml(j.vendor)}</td><td>${escapeHtml(j.delivery_challan_no || "-")}</td><td>${escapeHtml(line.source_item_code || "-")}</td><td>${moneyish(line.qty_sent)}</td><td>${escapeHtml(line.output_item_code || "-")}</td><td>${moneyish(line.qty_received)}</td><td>${escapeHtml(j.expected_return_date || "-")}</td><td>${statusChip(j.status)}</td><td><button class="mini-btn" onclick="printJobWork('${j.id}')">Print</button></td></tr>`; }).join("") || emptyRow(10); } if ($("materialAtVendorCards")) $("materialAtVendorCards").innerHTML = ""; }
@@ -1793,17 +1730,6 @@ window.printGRN = function(id) {
   ]);
   const labels = lines.map((line) => grnStoreLabel(grn, line)).join("");
   openPrintDocument(grn.grn_no, "Receiving / Store Label", `${summary}<div class="label-grid">${labels}</div>`);
-};
-
-window.retryGrnMail = async function(id) {
-  const grn = state.grns.find((row) => row.id === id);
-  if (!grn) return;
-  if (typeof showWorkflowMessage === "function") showWorkflowMessage(`Sending GRN mail for ${grn.grn_no}...`, true);
-  const result = await sendGrnMailAndTrack(id);
-  renderAll();
-  if (typeof showWorkflowMessage === "function") {
-    showWorkflowMessage(result.ok ? `GRN mail sent for ${grn.grn_no}.` : `GRN mail failed for ${grn.grn_no}: ${result.error?.message || "Zoho Flow failed"}`, result.ok);
-  }
 };
 
 window.printMIV = function(id) {

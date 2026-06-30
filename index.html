@@ -329,7 +329,7 @@
           <p class="muted">Inventory team can record reverse stock returns against issued tickets. Saving a return log adds the quantity back into inventory and creates reverse movement entries.</p>
           <div class="table-wrap tall">
             <table>
-              <thead><tr><th>Return No</th><th>Date</th><th>Source Ticket</th><th>Returned By</th><th>Items</th><th>Total Qty</th><th>Mail</th><th>Action</th></tr></thead>
+              <thead><tr><th>Return No</th><th>Date</th><th>Source Ticket</th><th>Returned By</th><th>Items</th><th>Total Qty</th><th>Action</th></tr></thead>
               <tbody id="returnRows"></tbody>
             </table>
           </div>
@@ -345,7 +345,7 @@
           <p class="muted">Supplier receipts post accepted quantity into the stock ledger and move hold or rejected quantity into quarantine.</p>
           <div class="table-wrap tall">
             <table>
-              <thead><tr><th>GRN No</th><th>Date</th><th>Supplier</th><th>PO / Invoice</th><th>Lines</th><th>Accepted</th><th>Hold / Reject</th><th>QC</th><th>Mail</th><th>Action</th></tr></thead>
+              <thead><tr><th>GRN No</th><th>Date</th><th>Supplier</th><th>PO / Invoice</th><th>Lines</th><th>Accepted</th><th>Hold / Reject</th><th>QC</th><th>Action</th></tr></thead>
               <tbody id="grnRows"></tbody>
             </table>
           </div>
@@ -581,7 +581,6 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
         <label>Received By (Inventory) <em>*</em><input id="receivedBy" placeholder="Inventory team member" required /></label>
         <label>Notes<input id="returnNotes" placeholder="Reason / condition / reference" /></label>
       </div>
-      <label>Approval Mail Status<input id="approvalMailStatus" value="Will send after save" disabled /></label>
       <div class="return-line-wrap">
         <div class="return-line-head"><span>Item</span><span>Issued</span><span>Already Returned</span><span>Returnable</span><span>Qty Returning</span><span>Bin</span></div>
         <div id="returnLineRows" class="return-line-list"></div>
@@ -607,7 +606,7 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
         <label>GRN No<input id="grnNo" required /></label><label>GRN Date<input id="grnDate" type="date" required /></label>
         <label>Supplier<input id="grnSupplier" required /></label><label>PO No<input id="grnPoNo" /></label>
         <label>Invoice No<input id="grnInvoiceNo" /></label><label>Received By<input id="grnReceivedBy" /></label>
-        <label>Item Type<select id="grnItemType" required><option value="">Select type</option><option value="MFG">MFG</option><option value="RM">RM</option><option value="STD">STD</option></select></label><label>Item Code<input id="grnItemCode" required readonly placeholder="Select type to generate" /></label>
+        <label>Item Type<select id="grnItemType" required><option value="">Select type</option><option value="MFG">MFG</option><option value="RM">RM</option><option value="STD">STD</option><option value="ELE">ELE</option></select></label><label>Item Code<input id="grnItemCode" required readonly placeholder="Select type to generate" /></label>
         <label>Description<input id="grnDescription" /></label><label>UOM<input id="grnUom" /></label>
         <label>Received Qty<input id="grnReceivedQty" type="number" step="0.01" min="0" required /></label>
         <label>Accepted Qty<input id="grnAcceptedQty" type="number" step="0.01" min="0" required /></label><label>Hold Qty<input id="grnHoldQty" type="number" step="0.01" min="0" value="0" /></label>
@@ -718,7 +717,7 @@ window.SNS_SUPABASE_ANON_KEY = "YOUR_ANON_OR_PUBLISHABLE_KEY";</code></pre>
 
   <script src="config.js"></script>
   <script src="app.js?v=20260523-print-watermark"></script>
-  <script src="v7-module.js?v=20260525-grn-mail"></script>
+  <script src="v7-module.js?v=20260630-no-mail-ele"></script>
   <script src="v8-module.js?v=20260517-login-stack-fix"></script>
 </body>
 </html>
