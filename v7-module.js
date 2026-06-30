@@ -54,7 +54,7 @@ function nextDocNo(prefix, rows, field) {
   return `${prefix}/${year}/${String(max + 1).padStart(4, "0")}`;
 }
 
-const GRN_ITEM_TYPES = ["MFG", "RM", "STD"];
+const GRN_ITEM_TYPES = ["MFG", "RM", "STD", "ELE"];
 
 function collectKnownItemCodes() {
   const codes = new Set();
@@ -92,7 +92,7 @@ function refreshGeneratedGrnItemCode(force = false) {
   if (!input) return "";
   if (!GRN_ITEM_TYPES.includes(type)) {
     input.value = "";
-    input.placeholder = "Select MFG / RM / STD";
+    input.placeholder = "Select MFG / RM / STD / ELE";
     return "";
   }
   const generated = nextGeneratedGrnItemCode(type);
@@ -419,14 +419,14 @@ function ensureInventoryItem({ item_code, description = "", uom = "", supplier =
 
 async function insertRows(table, rows) {
   const list = Array.isArray(rows) ? rows : [rows];
-  if (!state.dbReady || !state.user || !list.length) return;
-  queueV7DbSync({ method: "insert", table, rows: list, label: `${table} save` });
+  if (!state.dbReady || !state.user || !list.length) return { ok: false, skipped: true };
+  return queueV7DbSync({ method: "insert", table, rows: list, label: `${table} save` });
 }
 
 async function upsertRows(table, rows) {
   const list = Array.isArray(rows) ? rows : [rows];
-  if (!state.dbReady || !state.user || !list.length) return;
-  queueV7DbSync({ method: "upsert", table, rows: list, label: `${table} save` });
+  if (!state.dbReady || !state.user || !list.length) return { ok: false, skipped: true };
+  return queueV7DbSync({ method: "upsert", table, rows: list, label: `${table} save` });
 }
 
 function queueV7DbSync(write, fromRetry = false) {
@@ -440,13 +440,14 @@ function queueV7DbSync(write, fromRetry = false) {
   };
   const request = state.supabase.from(safeWrite.table)[safeWrite.method](safeWrite.rows);
   const sync = typeof withDbTimeout === "function" ? withDbTimeout(request, safeWrite.label) : request;
-  Promise.resolve(sync)
+  return Promise.resolve(sync)
     .then((res) => {
       if (res?.error) throw new Error(res.error.message || String(res.error));
       if (fromRetry) {
         state.v7PendingDbWrites = (state.v7PendingDbWrites || []).filter((x) => x.id !== safeWrite.id);
         persistLocal();
       }
+      return { ok: true };
     })
     .catch((err) => {
       console.warn(`${safeWrite.label} sync failed`, err);
@@ -459,6 +460,7 @@ function queueV7DbSync(write, fromRetry = false) {
         state.lastV7DbSyncWarningAt = now;
         if (typeof showWorkflowMessage === "function") showWorkflowMessage("Saved locally. Database sync is queued and will retry automatically.", true);
       }
+      return { ok: false, error: err };
     });
 }
 
@@ -1112,21 +1114,25 @@ async function saveGRN(e) {
     const received = v7Num($("grnReceivedQty").value);
     if (accepted + hold + rejected > received) throw new Error("Accepted + hold + rejected cannot exceed received quantity.");
     const grnItemType = upper($("grnItemType")?.value);
-    if (!GRN_ITEM_TYPES.includes(grnItemType)) throw new Error("Select item type MFG, RM, or STD before saving GRN.");
+    if (!GRN_ITEM_TYPES.includes(grnItemType)) throw new Error("Select item type MFG, RM, STD, or ELE before saving GRN.");
     const generatedItemCode = refreshGeneratedGrnItemCode(true);
     if (!generatedItemCode) throw new Error("Item code could not be generated. Select item type again.");
     const now = new Date().toISOString();
     const grn = normalizeGrn({ id: uid(), grn_no: $("grnNo").value.trim(), grn_date: $("grnDate").value, po_no: $("grnPoNo").value, supplier: $("grnSupplier").value, invoice_no: $("grnInvoiceNo").value, received_by: $("grnReceivedBy").value, qc_status: $("grnQcStatus").value, remarks: $("grnRemarks").value, created_by: state.user?.id || null, created_by_email: state.user?.email || "", created_at: now, updated_at: now });
     const line = normalizeGrnLine({ id: uid(), grn_id: grn.id, item_code: generatedItemCode, description: $("grnDescription").value, uom: $("grnUom").value, received_qty: received, accepted_qty: accepted, hold_qty: hold, rejected_qty: rejected, putaway_bin: $("grnPutawayBin").value, unit_rate: $("grnUnitRate").value, landed_cost: accepted * v7Num($("grnUnitRate").value), qc_status: $("grnQcStatus").value, remarks: $("grnRemarks").value, created_at: now });
     state.grns.unshift(grn); state.grnLines.push(line);
-    await insertRows("grn_headers", grn); await insertRows("grn_lines", line);
+    const grnHeaderSync = await insertRows("grn_headers", grn);
+    const grnLineSync = await insertRows("grn_lines", line);
     if (accepted > 0) await postLedgerEntry({ movement_type: "GRN_ACCEPTED", source_doc_type: "GRN", source_doc_no: grn.grn_no, source_line_id: line.id, item_code: line.item_code, description: line.description, uom: line.uom, in_qty: accepted, to_bin: line.putaway_bin, vendor: grn.supplier, unit_cost: line.unit_rate, total_value: line.landed_cost, remarks: grn.remarks });
     if (accepted > 0 && line.unit_rate > 0) await addCostLayer({ item_code: line.item_code, source_doc_type: "GRN", source_doc_no: grn.grn_no, qty: accepted, unit_cost: line.unit_rate, total_value: line.landed_cost });
     if (hold + rejected > 0) {
       const ncr = normalizeNcr({ id: uid(), ncr_no: `NCR-${grn.grn_no.replaceAll("/", "-")}`, po_ref: grn.po_no, supplier: grn.supplier, item_code: line.item_code, description: line.description, qty_hold: hold + rejected, status: rejected > 0 ? "REJECT" : "HOLD", reason: `GRN ${grn.grn_no} QC ${grn.qc_status}`, owner: "QC", updated_at: now });
       state.quarantine.unshift(ncr); await upsertRows("quarantine_items", ncr).catch(console.warn);
     }
-    persistLocal(); renderAll(); setV7Msg("grnMessage", `GRN ${grn.grn_no} saved.`); setTimeout(() => $("grnModal")?.close(), 250);
+    persistLocal();
+    renderAll();
+    setV7Msg("grnMessage", grnHeaderSync?.ok && grnLineSync?.ok ? `GRN ${grn.grn_no} saved.` : `GRN ${grn.grn_no} saved locally. Database sync is queued.`, true);
+    setTimeout(() => $("grnModal")?.close(), grnHeaderSync?.ok && grnLineSync?.ok ? 450 : 650);
   } catch (err) { setV7Msg("grnMessage", err.message, false); }
   finally { setSubmitBusy?.(form, false); }
 }
