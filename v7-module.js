@@ -1665,11 +1665,12 @@ renderDashboard = function() {
 };
 
 function rowsFor(id, list, fk) { return list.filter((x) => x[fk] === id); }
-function renderGRNRegister() { if ($("grnRows")) { $("grnCount").textContent = `${state.grns.length} GRNs`; $("grnRows").innerHTML = state.grns.map((g) => { const lines = rowsFor(g.id, state.grnLines, "grn_id"); return `<tr><td><strong>${escapeHtml(g.grn_no)}</strong></td><td>${escapeHtml(g.grn_date)}</td><td>${escapeHtml(g.supplier)}</td><td>${escapeHtml(g.po_no || "-")}</td><td>${lines.length}</td><td>${moneyish(lines.reduce((s, x) => s + x.accepted_qty, 0))}</td><td>${moneyish(lines.reduce((s, x) => s + x.hold_qty + x.rejected_qty, 0))}</td><td>${statusChip(g.qc_status)}</td><td><button class="mini-btn" onclick="printGRN('${g.id}')">Print</button></td></tr>`; }).join("") || emptyRow(9); } }
-function renderMIVRegister() { if ($("mivRows")) { $("mivCount").textContent = `${state.mivs.length} MIVs`; $("mivRows").innerHTML = state.mivs.map((m) => { const lines = rowsFor(m.id, state.mivLines, "miv_id"); return `<tr><td><strong>${escapeHtml(m.miv_no)}</strong></td><td>${escapeHtml(m.miv_date)}</td><td>${escapeHtml(m.source_ticket_no || "-")}</td><td>${escapeHtml(m.issued_to)}</td><td>${escapeHtml(m.work_order)}</td><td>${lines.length}</td><td>${moneyish(lines.reduce((s, x) => s + x.qty_issued, 0))}</td><td>${statusChip(m.status)}</td><td><button class="mini-btn" onclick="printMIV('${m.id}')">Print</button></td></tr>`; }).join("") || emptyRow(9); } }
-function renderDeliveryChallanRegister() { if ($("dcRows")) { $("dcCount").textContent = `${state.deliveryChallans.length} DCs`; $("dcRows").innerHTML = state.deliveryChallans.map((dc) => { const lines = rowsFor(dc.id, state.deliveryChallanLines, "dc_id"); return `<tr><td><strong>${escapeHtml(dc.dc_no)}</strong></td><td>${escapeHtml(dc.dc_date)}</td><td>${escapeHtml(dc.vendor)}</td><td>${escapeHtml(dc.linked_job_work_no || "-")}</td><td>${escapeHtml(dc.expected_return_date || "-")}</td><td>${moneyish(lines.reduce((s, x) => s + x.qty, 0))}</td><td>${moneyish(dc.approx_value)}</td><td>${statusChip(dc.status)}</td><td><button class="mini-btn" onclick="printDeliveryChallan('${dc.id}')">Print</button></td></tr>`; }).join("") || emptyRow(9); } }
-function renderJobWorkRegister() { if ($("jobWorkRows")) { $("jobWorkCount").textContent = `${state.jobWorks.length} jobs`; $("jobWorkRows").innerHTML = state.jobWorks.map((j) => { const line = rowsFor(j.id, state.jobWorkLines, "job_work_id")[0] || {}; return `<tr><td><strong>${escapeHtml(j.job_work_no)}</strong></td><td>${escapeHtml(j.vendor)}</td><td>${escapeHtml(j.delivery_challan_no || "-")}</td><td>${escapeHtml(line.source_item_code || "-")}</td><td>${moneyish(line.qty_sent)}</td><td>${escapeHtml(line.output_item_code || "-")}</td><td>${moneyish(line.qty_received)}</td><td>${escapeHtml(j.expected_return_date || "-")}</td><td>${statusChip(j.status)}</td><td><button class="mini-btn" onclick="printJobWork('${j.id}')">Print</button></td></tr>`; }).join("") || emptyRow(10); } if ($("materialAtVendorCards")) $("materialAtVendorCards").innerHTML = ""; }
-function renderWIPRegister() { if ($("wipRows")) { $("wipCount").textContent = `${state.wipConversions.length} WIP`; $("wipRows").innerHTML = state.wipConversions.map((w) => { const line = rowsFor(w.id, state.wipConversionLines, "wip_id")[0] || {}; return `<tr><td><strong>${escapeHtml(w.wip_no)}</strong></td><td>${escapeHtml(w.start_date)}</td><td>${escapeHtml(w.work_order)}</td><td>${escapeHtml(w.process_name)}</td><td>${escapeHtml(line.input_item_code || "-")}</td><td>${escapeHtml(w.output_item_code)}</td><td>${moneyish(w.output_qty)}</td><td>${moneyish(v7Num(line.total_value) + v7Num(w.labour_cost) + v7Num(w.consumables_cost))}</td><td>${statusChip(w.status)}</td><td><button class="mini-btn" onclick="printWIP('${w.id}')">Print</button></td></tr>`; }).join("") || emptyRow(10); } }
+function printRowAction(printCall) { return `<button class="mini-btn" onclick="${printCall}">Print</button>`; }
+function renderGRNRegister() { if ($("grnRows")) { $("grnCount").textContent = `${state.grns.length} GRNs`; $("grnRows").innerHTML = state.grns.map((g) => { const lines = rowsFor(g.id, state.grnLines, "grn_id"); return `<tr><td><strong>${escapeHtml(g.grn_no)}</strong></td><td>${escapeHtml(g.grn_date)}</td><td>${escapeHtml(g.supplier)}</td><td>${escapeHtml(g.po_no || "-")}</td><td>${lines.length}</td><td>${moneyish(lines.reduce((s, x) => s + x.accepted_qty, 0))}</td><td>${moneyish(lines.reduce((s, x) => s + x.hold_qty + x.rejected_qty, 0))}</td><td>${statusChip(g.qc_status)}</td><td>${printRowAction(`printGRN('${g.id}')`)}</td></tr>`; }).join("") || emptyRow(9); } }
+function renderMIVRegister() { if ($("mivRows")) { $("mivCount").textContent = `${state.mivs.length} MIVs`; $("mivRows").innerHTML = state.mivs.map((m) => { const lines = rowsFor(m.id, state.mivLines, "miv_id"); return `<tr><td><strong>${escapeHtml(m.miv_no)}</strong></td><td>${escapeHtml(m.miv_date)}</td><td>${escapeHtml(m.source_ticket_no || "-")}</td><td>${escapeHtml(m.issued_to)}</td><td>${escapeHtml(m.work_order)}</td><td>${lines.length}</td><td>${moneyish(lines.reduce((s, x) => s + x.qty_issued, 0))}</td><td>${statusChip(m.status)}</td><td>${printRowAction(`printMIV('${m.id}')`)}</td></tr>`; }).join("") || emptyRow(9); } }
+function renderDeliveryChallanRegister() { if ($("dcRows")) { $("dcCount").textContent = `${state.deliveryChallans.length} DCs`; $("dcRows").innerHTML = state.deliveryChallans.map((dc) => { const lines = rowsFor(dc.id, state.deliveryChallanLines, "dc_id"); return `<tr><td><strong>${escapeHtml(dc.dc_no)}</strong></td><td>${escapeHtml(dc.dc_date)}</td><td>${escapeHtml(dc.vendor)}</td><td>${escapeHtml(dc.linked_job_work_no || "-")}</td><td>${escapeHtml(dc.expected_return_date || "-")}</td><td>${moneyish(lines.reduce((s, x) => s + x.qty, 0))}</td><td>${moneyish(dc.approx_value)}</td><td>${statusChip(dc.status)}</td><td>${printRowAction(`printDeliveryChallan('${dc.id}')`)}</td></tr>`; }).join("") || emptyRow(9); } }
+function renderJobWorkRegister() { if ($("jobWorkRows")) { $("jobWorkCount").textContent = `${state.jobWorks.length} jobs`; $("jobWorkRows").innerHTML = state.jobWorks.map((j) => { const line = rowsFor(j.id, state.jobWorkLines, "job_work_id")[0] || {}; return `<tr><td><strong>${escapeHtml(j.job_work_no)}</strong></td><td>${escapeHtml(j.vendor)}</td><td>${escapeHtml(j.delivery_challan_no || "-")}</td><td>${escapeHtml(line.source_item_code || "-")}</td><td>${moneyish(line.qty_sent)}</td><td>${escapeHtml(line.output_item_code || "-")}</td><td>${moneyish(line.qty_received)}</td><td>${escapeHtml(j.expected_return_date || "-")}</td><td>${statusChip(j.status)}</td><td>${printRowAction(`printJobWork('${j.id}')`)}</td></tr>`; }).join("") || emptyRow(10); } if ($("materialAtVendorCards")) $("materialAtVendorCards").innerHTML = ""; }
+function renderWIPRegister() { if ($("wipRows")) { $("wipCount").textContent = `${state.wipConversions.length} WIP`; $("wipRows").innerHTML = state.wipConversions.map((w) => { const line = rowsFor(w.id, state.wipConversionLines, "wip_id")[0] || {}; return `<tr><td><strong>${escapeHtml(w.wip_no)}</strong></td><td>${escapeHtml(w.start_date)}</td><td>${escapeHtml(w.work_order)}</td><td>${escapeHtml(w.process_name)}</td><td>${escapeHtml(line.input_item_code || "-")}</td><td>${escapeHtml(w.output_item_code)}</td><td>${moneyish(w.output_qty)}</td><td>${moneyish(v7Num(line.total_value) + v7Num(w.labour_cost) + v7Num(w.consumables_cost))}</td><td>${statusChip(w.status)}</td><td>${printRowAction(`printWIP('${w.id}')`)}</td></tr>`; }).join("") || emptyRow(10); } }
 function renderStockLedger() { if ($("ledgerRows")) { $("ledgerCount").textContent = `${state.stockLedger.length} entries`; $("ledgerRows").innerHTML = state.stockLedger.slice(0, 700).map((l) => `<tr><td>${escapeHtml(l.ledger_date)}</td><td>${escapeHtml(l.movement_type)}</td><td>${escapeHtml(l.source_doc_type)}<br><span class="muted">${escapeHtml(l.source_doc_no)}</span></td><td><strong>${escapeHtml(l.item_code)}</strong><br><span class="muted">${escapeHtml(l.description)}</span></td><td>${moneyish(l.in_qty)}</td><td>${moneyish(l.out_qty)}</td><td>${moneyish(l.qty_before)}</td><td>${moneyish(l.qty_after)}</td><td>${escapeHtml(l.from_bin)}</td><td>${escapeHtml(l.to_bin)}</td><td>${escapeHtml(l.remarks)}</td></tr>`).join("") || emptyRow(11); } }
 function renderScrapRegister() { if ($("scrapRows")) { $("scrapCount").textContent = `${state.scrapLogs.length} scrap records`; $("scrapRows").innerHTML = state.scrapLogs.map((s) => `<tr><td><strong>${escapeHtml(s.scrap_no)}</strong></td><td>${escapeHtml(s.scrap_date)}</td><td>${escapeHtml(s.source_doc_type)}<br><span class="muted">${escapeHtml(s.source_doc_no)}</span></td><td>${escapeHtml(s.item_code)}<br><span class="muted">${escapeHtml(s.description)}</span></td><td>${moneyish(s.qty_scrapped)}</td><td>${escapeHtml(s.reason)}</td><td>${moneyish(s.scrap_value)}</td><td>${statusChip(s.status)}</td></tr>`).join("") || emptyRow(8); } }
 function renderCostSummary() { if ($("costRows")) { $("costLayerCount").textContent = `${state.itemCostLayers.length} cost layers`; if ($("costSummaryCards")) $("costSummaryCards").innerHTML = ""; $("costRows").innerHTML = state.itemCostLayers.map((c) => `<tr><td><strong>${escapeHtml(c.item_code)}</strong></td><td>${escapeHtml(c.source_doc_type)}<br><span class="muted">${escapeHtml(c.source_doc_no)}</span></td><td>${moneyish(c.qty)}</td><td>${moneyish(c.unit_cost)}</td><td>${moneyish(c.total_value)}</td><td>${escapeHtml(c.cost_method)}</td><td>${new Date(c.created_at).toLocaleString()}</td></tr>`).join("") || emptyRow(7); } }
@@ -1697,8 +1698,23 @@ function printV7Document(title, subtitle, meta, headers, rows, signatures) {
   openPrintDocument(title, subtitle, `${printMetaGrid(meta)}${printTable(headers, rows)}${printSignatures(signatures)}`);
 }
 
-function grnStoreLabel(grn, line) {
-  return `<section class="store-label"><h2>RECEIVING / STORE LABEL</h2>${printMetaGrid([
+async function grnStoreLabel(grn, line) {
+  const inventoryItem = findInventoryItemForQr(line.item_code) || {};
+  const qrItem = {
+    ...inventoryItem,
+    item_code: line.item_code,
+    description: line.description || inventoryItem.description || "",
+    bin: line.putaway_bin || inventoryItem.bin || "",
+    uom: line.uom || inventoryItem.uom || "Nos",
+    part_no: inventoryItem.part_no || "",
+  };
+  let qrHtml = "";
+  try {
+    qrHtml = await itemQrInlineHtml(qrItem);
+  } catch (err) {
+    qrHtml = `<p style="border:1px solid #111;padding:8px;margin:10px 0;font-size:11px">QR unavailable: ${escapeHtml(errMsg(err))}</p>`;
+  }
+  return `<section class="store-label"><h2>RECEIVING / STORE LABEL</h2>${qrHtml}${printMetaGrid([
     ["Part No.", line.item_code],
     ["Description", line.description],
     ["Qty", moneyish(line.accepted_qty || line.received_qty)],
@@ -1714,7 +1730,7 @@ function grnStoreLabel(grn, line) {
   ])}${printSignatures(["Handled By", "Inspector / Stamp", "Store Manager"])}</section>`;
 }
 
-window.printGRN = function(id) {
+window.printGRN = async function(id) {
   const grn = state.grns.find((x) => x.id === id);
   if (!grn) return;
   const lines = rowsFor(id, state.grnLines, "grn_id");
@@ -1728,8 +1744,13 @@ window.printGRN = function(id) {
     ["QC Status", grn.qc_status],
     ["Line Count", lines.length],
   ]);
-  const labels = lines.map((line) => grnStoreLabel(grn, line)).join("");
+  const labels = (await Promise.all(lines.map((line) => grnStoreLabel(grn, line)))).join("");
   openPrintDocument(grn.grn_no, "Receiving / Store Label", `${summary}<div class="label-grid">${labels}</div>`);
+};
+
+window.printGrnQrLabel = function(id) {
+  const grn = state.grns.find((x) => x.id === id);
+  if (grn) printDocumentQrLabel("GRN", grn.grn_no);
 };
 
 window.printMIV = function(id) {
@@ -1748,6 +1769,11 @@ window.printMIV = function(id) {
   ], ["S.No", "Item Code", "Description", "UOM", "From Bin", "Qty Issued"], lines.map((l, i) => [i + 1, l.item_code, l.description, l.uom, l.from_bin, moneyish(l.qty_issued)]), ["Stores Signature", "Receiver Signature", "Verified By"]);
 };
 
+window.printMivQrLabel = function(id) {
+  const miv = state.mivs.find((x) => x.id === id);
+  if (miv) printDocumentQrLabel("MIV", miv.miv_no);
+};
+
 window.printDeliveryChallan = function(id) {
   const dc = state.deliveryChallans.find((x) => x.id === id);
   if (!dc) return;
@@ -1762,6 +1788,11 @@ window.printDeliveryChallan = function(id) {
     ["Approx Value", moneyish(dc.approx_value)],
     ["Status", dc.status],
   ], ["S.No", "Item Code", "Description", "UOM", "Qty", "Rate", "Value"], lines.map((l, i) => [i + 1, l.item_code, l.description, l.uom, moneyish(l.qty), moneyish(l.rate), moneyish(l.value)]), ["Prepared By", "Vendor / Receiver", "Authorized By"]);
+};
+
+window.printDcQrLabel = function(id) {
+  const dc = state.deliveryChallans.find((x) => x.id === id);
+  if (dc) printDocumentQrLabel("DC", dc.dc_no);
 };
 
 window.printJobWork = function(id) {
@@ -1780,6 +1811,11 @@ window.printJobWork = function(id) {
   ], ["S.No", "Source Item", "Description", "UOM", "Qty Sent", "Output Item", "Qty Received", "Wastage"], lines.map((l, i) => [i + 1, l.source_item_code, l.source_description, l.source_uom, moneyish(l.qty_sent), l.output_item_code, moneyish(l.qty_received), moneyish(l.wastage_qty)]), ["Stores Signature", "Vendor Signature", "QC / Verified By"]);
 };
 
+window.printJobWorkQrLabel = function(id) {
+  const job = state.jobWorks.find((x) => x.id === id);
+  if (job) printDocumentQrLabel("JW", job.job_work_no);
+};
+
 window.printWIP = function(id) {
   const wip = state.wipConversions.find((x) => x.id === id);
   if (!wip) return;
@@ -1794,6 +1830,16 @@ window.printWIP = function(id) {
     ["Output Qty", moneyish(wip.output_qty)],
     ["Status", wip.status],
   ], ["S.No", "Input Item", "Description", "UOM", "Qty Used", "Unit Cost", "Total Value"], lines.map((l, i) => [i + 1, l.input_item_code, l.input_description, l.input_uom, moneyish(l.qty_used), moneyish(l.unit_cost), moneyish(l.total_value)]), ["Production", "Stores", "Verified By"]);
+};
+
+window.printWipQrLabel = function(id) {
+  const wip = state.wipConversions.find((x) => x.id === id);
+  if (wip) printDocumentQrLabel("WIP", wip.wip_no);
+};
+
+window.printScrapQrLabel = function(id) {
+  const scrap = state.scrapLogs.find((x) => x.id === id);
+  if (scrap) printDocumentQrLabel("SCRAP", scrap.scrap_no);
 };
 
 function sameItemRef(row, code, itemId, codeFields = ["item_code"], idFields = ["item_id"]) {
