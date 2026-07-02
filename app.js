@@ -80,6 +80,329 @@ function openPrintDocument(title, subtitle, content) {
   }
 }
 
+const QR_DOCUMENT_PREFIXES = ["GRN", "MIV", "MRN", "RET", "RETURN", "TICKET", "ISSUE", "ISS", "DC", "WIP", "SCRAP", "SCR", "JW", "JOB"];
+
+function cleanQr(value) {
+  return String(value ?? "").trim();
+}
+
+function qrUpper(value) {
+  return cleanQr(value).toUpperCase();
+}
+
+function encodeItemQr(item = {}) {
+  return [
+    "SNS",
+    qrUpper(item.item_code),
+    cleanQr(item.description).replaceAll("|", " "),
+    qrUpper(item.bin || item.putaway_bin || item.to_bin),
+    cleanQr(item.uom || "Nos"),
+    cleanQr(item.part_no),
+  ].join("|");
+}
+
+function encodeBinQr(binOrId) {
+  const binId = typeof binOrId === "string" ? binOrId : binOrId?.bin_id;
+  return ["SNS", "BIN", qrUpper(binId)].join("|");
+}
+
+function encodeDocumentQr(docType, docNo) {
+  return ["SNS", "DOC", qrUpper(docType || "DOC"), cleanQr(docNo)].join("|");
+}
+
+function findInventoryItemForQr(idOrCode) {
+  if (idOrCode && typeof idOrCode === "object") return idOrCode;
+  const key = cleanQr(idOrCode);
+  const upperKey = qrUpper(key);
+  const displayRows = typeof stockRowsForDisplay === "function" ? stockRowsForDisplay() : [];
+  return [...displayRows, ...(state.inventory || [])].find((item) =>
+    String(item?.id || "") === key || qrUpper(item?.item_code) === upperKey
+  ) || null;
+}
+
+function findBinForQr(idOrCode) {
+  if (idOrCode && typeof idOrCode === "object") return idOrCode;
+  const key = cleanQr(idOrCode);
+  const upperKey = qrUpper(key);
+  return (state.binLocations || []).find((bin) =>
+    String(bin?.id || "") === key || qrUpper(bin?.bin_id) === upperKey
+  ) || null;
+}
+
+function findDocumentForQr(docNo) {
+  const key = qrUpper(docNo);
+  const collections = [
+    [state.grns, "grn_no"],
+    [state.mivs, "miv_no"],
+    [state.returnLogs, "return_no"],
+    [state.deliveryChallans, "dc_no"],
+    [state.jobWorks, "job_work_no"],
+    [state.wipConversions, "wip_no"],
+    [state.scrapLogs, "scrap_no"],
+    [state.tickets, "ticket_no"],
+    [state.stockLedger, "source_doc_no"],
+    [state.movements, "source_doc_no"],
+  ];
+  for (const [rows, field] of collections) {
+    const found = (rows || []).find((row) => qrUpper(row?.[field]) === key);
+    if (found) return found;
+  }
+  return null;
+}
+
+function parseQrPayload(raw) {
+  const value = cleanQr(raw);
+  const key = qrUpper(value);
+  if (!value) return { type: "EMPTY", value: "", raw: value };
+
+  const parts = value.split("|").map((part) => part.trim());
+  if (qrUpper(parts[0]) === "SNS") {
+    const kind = qrUpper(parts[1]);
+    if (kind === "ITEM") {
+      const itemCode = qrUpper(parts[2] || "");
+      return { type: "ITEM", value: itemCode, raw: value, record: findInventoryItemForQr(itemCode) };
+    }
+    if (kind === "BIN") {
+      const binId = qrUpper(parts[2] || "");
+      return { type: "BIN", value: binId, raw: value, record: findBinForQr(binId) };
+    }
+    if (kind === "DOC") {
+      const docType = qrUpper(parts[2] || "DOC");
+      const docNo = parts.slice(3).join("|");
+      return { type: "DOC", docType, value: docNo, raw: value, record: findDocumentForQr(docNo) };
+    }
+
+    const itemCode = qrUpper(parts[1] || "");
+    if (itemCode) return { type: "ITEM", value: itemCode, raw: value, record: findInventoryItemForQr(itemCode) };
+  }
+
+  const colonIndex = value.indexOf(":");
+  if (colonIndex > 0) {
+    const prefix = qrUpper(value.slice(0, colonIndex));
+    const payload = cleanQr(value.slice(colonIndex + 1));
+    if (prefix === "ITEM") return { type: "ITEM", value: qrUpper(payload), raw: value, record: findInventoryItemForQr(payload) };
+    if (prefix === "BIN") return { type: "BIN", value: qrUpper(payload), raw: value, record: findBinForQr(payload) };
+    if (QR_DOCUMENT_PREFIXES.includes(prefix)) {
+      return { type: "DOC", docType: prefix, value: payload, raw: value, record: findDocumentForQr(payload) };
+    }
+  }
+
+  const docMatch = value.match(/^(GRN|MIV|MRN|RET|RETURN|TICKET|ISSUE|ISS|DC|WIP|SCRAP|SCR|JW|JOB)[/-]/i);
+  if (docMatch) {
+    const docType = qrUpper(docMatch[1]);
+    return { type: "DOC", docType, value, raw: value, record: findDocumentForQr(value) };
+  }
+
+  if (/^R\d+-L\d+-B\d+$/i.test(value)) return { type: "BIN", value: key, raw: value, record: findBinForQr(value) };
+  if (/^TEMP-/i.test(value) || /^[A-Z0-9]+-[A-Z0-9]+-\d+/i.test(value)) {
+    return { type: "ITEM", value: key, raw: value, record: findInventoryItemForQr(value) };
+  }
+  return { type: "SEARCH", value, raw: value };
+}
+
+function makeQrSvg(data, width = 180) {
+  return new Promise((resolve, reject) => {
+    if (window.QRCode?.toString) {
+      window.QRCode.toString(data, {
+        type: "svg",
+        errorCorrectionLevel: "M",
+        margin: 2,
+        width,
+        color: { dark: "#000000", light: "#ffffff" },
+      }, (err, svg) => {
+        if (err) reject(err);
+        else resolve(svg);
+      });
+      return;
+    }
+
+    if (typeof window.qrcode === "function") {
+      const qr = window.qrcode(0, "M");
+      qr.addData(String(data));
+      qr.make();
+      const modules = qr.getModuleCount();
+      const cellSize = Math.max(2, Math.floor(width / (modules + 4)));
+      resolve(qr.createSvgTag(cellSize, 2));
+      return;
+    }
+
+    {
+      reject(new Error("QR library is not loaded."));
+      return;
+    }
+  });
+}
+
+function qrPrintCss() {
+  return `<style>
+    @page{size:A4;margin:10mm}
+    *{box-sizing:border-box}
+    body{font-family:Arial,sans-serif;color:#111;background:#fff;margin:0}
+    .printbar{text-align:right;margin-bottom:4mm}
+    .printbar button{font:700 12px Arial,sans-serif;padding:6px 10px}
+    .qr-sheet{max-width:190mm;margin:0 auto}
+    .qr-head{display:grid;grid-template-columns:44mm 1fr 36mm;align-items:center;gap:5mm;border-bottom:1px solid #111;margin-bottom:5mm;padding-bottom:3mm}
+    .qr-head img{max-width:42mm;max-height:14mm;object-fit:contain}
+    .qr-head h1{font-size:14px;margin:0;text-transform:uppercase;letter-spacing:.05em;text-align:center}
+    .qr-head p{font-size:9px;margin:1mm 0 0;text-align:center;color:#444}
+    .qr-meta-print{text-align:right;font-size:8px;color:#555}
+    .qr-label-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:4mm}
+    .qr-label{width:44mm;min-height:48mm;border:1px solid #111;padding:3mm;background:#fff;break-inside:avoid;page-break-inside:avoid}
+    .qr-box{display:flex;justify-content:center;align-items:center;margin-bottom:2mm}
+    .qr-box svg{width:28mm;height:28mm;display:block}
+    .qr-code{font-size:8px;font-weight:800;text-align:center;word-break:break-word;margin-bottom:1mm}
+    .qr-desc{font-size:6.5px;text-align:center;color:#333;line-height:1.15;max-height:8mm;overflow:hidden}
+    .qr-meta{font-size:6.5px;text-align:center;color:#111;margin-top:1mm;font-weight:700}
+    .qr-raw{font-size:5px;color:#666;word-break:break-all;margin-top:1mm;text-align:center}
+    @media print{.printbar{display:none}}
+  </style>`;
+}
+
+function openQrPrintWindow(title, content) {
+  const win = window.open("", "_blank", "width=900,height=700");
+  if (!win) {
+    alert("Allow pop-ups to print QR labels.");
+    return;
+  }
+  const logoSrc = printLogoSrc();
+  win.document.write(`<!doctype html><html><head><title>${escapeHtml(title)}</title>${qrPrintCss()}</head><body>
+    <div class="printbar"><button onclick="window.print()">Print QR Labels</button></div>
+    <main class="qr-sheet">
+      <header class="qr-head"><img data-print-logo src="${logoSrc}" alt="Stack n Stock" /><div><h1>${escapeHtml(title)}</h1><p>Scan with SNS IMS Mobile</p></div><div class="qr-meta-print">Printed<br>${new Date().toLocaleString()}</div></header>
+      ${content}
+    </main>
+  </body></html>`);
+  win.document.close();
+  win.focus();
+  const logo = win.document.querySelector("[data-print-logo]");
+  const printReady = () => setTimeout(() => win.print(), 180);
+  if (logo && !logo.complete) {
+    let printed = false;
+    const once = () => {
+      if (printed) return;
+      printed = true;
+      printReady();
+    };
+    logo.addEventListener("load", once, { once: true });
+    logo.addEventListener("error", once, { once: true });
+    setTimeout(once, 1200);
+  } else {
+    printReady();
+  }
+}
+
+async function itemQrLabelHtml(item) {
+  const payload = encodeItemQr(item);
+  const svg = await makeQrSvg(payload, 180);
+  return `<section class="qr-label">
+    <div class="qr-box">${svg}</div>
+    <div class="qr-code">${escapeHtml(item.item_code || "")}</div>
+    <div class="qr-desc">${escapeHtml(item.description || "")}</div>
+    <div class="qr-meta">BIN: ${escapeHtml(item.bin || item.putaway_bin || "-")} | ${escapeHtml(item.uom || "Nos")}</div>
+    <div class="qr-raw">${escapeHtml(payload)}</div>
+  </section>`;
+}
+
+async function binQrLabelHtml(bin) {
+  const payload = encodeBinQr(bin);
+  const svg = await makeQrSvg(payload, 180);
+  return `<section class="qr-label">
+    <div class="qr-box">${svg}</div>
+    <div class="qr-code">${escapeHtml(bin.bin_id || "")}</div>
+    <div class="qr-desc">${escapeHtml(bin.area_room || bin.zone || "Bin Location")}</div>
+    <div class="qr-meta">${escapeHtml([bin.rack_no, bin.level, bin.bin_no].filter(Boolean).join(" ") || "-")}</div>
+    <div class="qr-raw">${escapeHtml(payload)}</div>
+  </section>`;
+}
+
+async function documentQrLabelHtml(docType, docNo) {
+  const payload = encodeDocumentQr(docType, docNo);
+  const svg = await makeQrSvg(payload, 180);
+  return `<section class="qr-label">
+    <div class="qr-box">${svg}</div>
+    <div class="qr-code">${escapeHtml(docNo || "")}</div>
+    <div class="qr-desc">${escapeHtml(docType || "Document")}</div>
+    <div class="qr-raw">${escapeHtml(payload)}</div>
+  </section>`;
+}
+
+async function itemQrInlineHtml(item) {
+  const payload = encodeItemQr(item);
+  const svg = await makeQrSvg(payload, 140);
+  return `<div style="display:grid;grid-template-columns:92px 1fr;gap:10px;align-items:center;border:1px solid #111;padding:8px;margin:10px 0;break-inside:avoid;background:#fff">
+    <div style="display:flex;justify-content:center">${svg}</div>
+    <div>
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#555">SNS IMS Mobile QR</div>
+      <div style="font-size:13px;font-weight:800;margin-top:3px">${escapeHtml(item.item_code || "")}</div>
+      <div style="font-size:10px;color:#333;margin-top:3px;word-break:break-word">${escapeHtml(payload)}</div>
+    </div>
+  </div>`;
+}
+
+function qrNotify(message, ok = true) {
+  if (typeof showWorkflowMessage === "function") showWorkflowMessage(message, ok);
+  else if (message) alert(message);
+}
+
+async function printInventoryItemQrLabel(idOrCode) {
+  try {
+    const item = findInventoryItemForQr(idOrCode);
+    if (!item) return qrNotify(`Item ${idOrCode} was not found.`, false);
+    const label = await itemQrLabelHtml(item);
+    openQrPrintWindow(`QR-${item.item_code}`, `<div class="qr-label-grid">${label}</div>`);
+  } catch (err) {
+    qrNotify(errMsg(err), false);
+  }
+}
+
+async function printBinQrLabel(idOrCode) {
+  try {
+    const bin = findBinForQr(idOrCode) || { bin_id: idOrCode };
+    const label = await binQrLabelHtml(bin);
+    openQrPrintWindow(`QR-BIN-${bin.bin_id}`, `<div class="qr-label-grid">${label}</div>`);
+  } catch (err) {
+    qrNotify(errMsg(err), false);
+  }
+}
+
+async function printDocumentQrLabel(docType, docNo) {
+  try {
+    const label = await documentQrLabelHtml(docType, docNo);
+    openQrPrintWindow(`QR-${docType}-${docNo}`, `<div class="qr-label-grid">${label}</div>`);
+  } catch (err) {
+    qrNotify(errMsg(err), false);
+  }
+}
+
+async function printVisibleInventoryQrLabels() {
+  try {
+    const rows = typeof stockRowsForDisplay === "function" ? stockRowsForDisplay() : filteredInventory();
+    if (!rows.length) return qrNotify("No visible inventory rows to print.", false);
+    const labels = await Promise.all(rows.map((item) => itemQrLabelHtml(item)));
+    openQrPrintWindow("SNS Inventory QR Labels", `<div class="qr-label-grid">${labels.join("")}</div>`);
+  } catch (err) {
+    qrNotify(errMsg(err), false);
+  }
+}
+
+window.SNSBarcode = {
+  parse: parseQrPayload,
+  encodeItem: encodeItemQr,
+  encodeBin: encodeBinQr,
+  encodeDocument: encodeDocumentQr,
+};
+Object.assign(window, {
+  encodeItemQr,
+  encodeBinQr,
+  encodeDocumentQr,
+  makeQrSvg,
+  itemQrInlineHtml,
+  printInventoryItemQrLabel,
+  printBinQrLabel,
+  printDocumentQrLabel,
+  printVisibleInventoryQrLabels,
+});
+
 function showWorkflowMessage(message, ok = true) {
   if (!message) return;
   const openDialog = document.querySelector("dialog[open]");
@@ -2499,6 +2822,11 @@ function renderReturns(){
   $('returnCount').textContent = `${state.returnLogs.length} logs`;
   $('returnRows').innerHTML = state.returnLogs.map((r)=>{ const lines = returnLogLinesFor(r.id); return `<tr><td><strong>${escapeHtml(r.return_no)}</strong></td><td>${escapeHtml(r.return_date)}</td><td>${escapeHtml(r.source_ticket_no)}</td><td>${escapeHtml(r.returned_by)}<br><span class="muted">${escapeHtml(r.returned_by_email || '')}</span></td><td>${lines.length}</td><td>${moneyish(r.total_qty)}</td><td><div class="return-action-row"><button class="ghost-btn compact" onclick="viewReturnLog('${r.id}')">View</button><button class="mini-btn" onclick="printReturnLog('${r.id}')">Print</button><button class="mini-btn danger" onclick="deleteReturnLog('${r.id}')">Delete</button></div></td></tr>`; }).join('') || emptyRow(7);
 }
+
+window.printReturnQrLabel = function(id) {
+  const ret = state.returnLogs.find((x) => x.id === id);
+  if (ret) printDocumentQrLabel("RET", ret.return_no);
+};
 
 const __v65_loadData = loadData;
 loadData = async function(){
